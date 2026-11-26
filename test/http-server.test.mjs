@@ -77,6 +77,23 @@ describe('monitor HTTP server & security', () => {
 
     const missingModeRes = await rawHttpRequest(srv.port, { path: '/' });
     assert.equal(missingModeRes.status, 403);
+
+    // magpie web --lan over plain HTTP omits Sec-Fetch-Mode but sends Accept: text/html without Origin
+    const lanHtmlNavRes = await rawHttpRequest(srv.port, {
+      path: '/',
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+    });
+    assert.equal(lanHtmlNavRes.status, 200);
+    assert.equal(lanHtmlNavRes.headers['set-cookie'], undefined);
+    assert.equal(lanHtmlNavRes.headers['access-control-allow-origin'], undefined);
+    assert.ok(lanHtmlNavRes.body.includes(`<meta name="usage-monitor-token" content="${srv.token}">`));
+
+    // Missing Sec-Fetch-Mode WITH Origin: null (sandboxed fetch) must still be rejected
+    const missingModeWithOrigin = await rawHttpRequest(srv.port, {
+      path: '/',
+      headers: { Accept: 'text/html', Origin: 'null' },
+    });
+    assert.equal(missingModeWithOrigin.status, 403);
   });
 
   it('rejects DNS-rebinding Host and disallowed Origin headers while allowing null and same-origin', async () => {
@@ -216,15 +233,30 @@ describe('monitor HTTP server & security', () => {
     assert.equal(rebuildRes.status, 200);
   });
 
-  it('serves static UI assets with relative paths and returns 404 for unknown/traversal paths', async () => {
+  it('handles OPTIONS preflight and serves static UI assets including view-model.mjs', async () => {
+    const preflight = await rawHttpRequest(srv.port, {
+      method: 'OPTIONS',
+      path: '/api/telemetry',
+      headers: {
+        Origin: 'null',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'X-Usage-Monitor-Token',
+      },
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers['access-control-allow-origin'], 'null');
+    assert.match(preflight.headers['access-control-allow-headers'], /X-Usage-Monitor-Token/i);
+
     for (const [path, ct] of [
       ['/preload.js', /^text\/javascript/],
       ['/styles.css', /^text\/css/],
       ['/app.js', /^text\/javascript/],
+      ['/view-model.mjs', /^text\/javascript/],
     ]) {
-      const res = await rawHttpRequest(srv.port, { path });
+      const res = await rawHttpRequest(srv.port, { path, headers: { Origin: 'null' } });
       assert.equal(res.status, 200);
       assert.match(res.headers['content-type'], ct);
+      assert.equal(res.headers['access-control-allow-origin'], 'null');
     }
 
     const preloadRes = await rawHttpRequest(srv.port, { path: '/preload.js' });

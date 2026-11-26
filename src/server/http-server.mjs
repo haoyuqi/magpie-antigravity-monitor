@@ -129,7 +129,7 @@ export async function startMonitorHttpServer(options = {}) {
   const requestedPort = Number.isInteger(options.port) && options.port >= 0 && options.port <= 65535
     ? options.port
     : DEFAULT_PORT;
-  const bindTries = Math.max(1, Number(options.bindTries) || 12);
+  const bindTries = Math.max(1, Number(options.bindTries) || 1);
   const bindRetryDelayMs = Math.max(5, Number(options.bindRetryDelayMs) || 500);
   const bgRetryIntervalMs = Math.max(10, Number(options.bgRetryIntervalMs) || 1000);
 
@@ -251,7 +251,10 @@ export async function startMonitorHttpServer(options = {}) {
 
       if ((method === 'GET' || method === 'HEAD') && (pathname === '/' || pathname === '/index.html')) {
         const secFetchMode = String(req.headers?.['sec-fetch-mode'] || '').trim().toLowerCase();
-        if (secFetchMode !== 'navigate') {
+        const accept = String(req.headers?.accept || '');
+        const hasOrigin = req.headers?.origin !== undefined;
+        const isPlainHtmlNav = secFetchMode === '' && !hasOrigin && /\btext\/html\b/i.test(accept);
+        if (secFetchMode !== 'navigate' && !isPlainHtmlNav) {
           send(res, 403, 'text/plain; charset=utf-8', 'Navigation request required');
           return;
         }
@@ -287,6 +290,12 @@ export async function startMonitorHttpServer(options = {}) {
 
       if (method === 'GET' && pathname === '/app.js') {
         const js = await readFile(join(UI_ROOT, 'app.js'));
+        send(res, 200, 'text/javascript; charset=utf-8', js, buildCorsHeaders(req));
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/view-model.mjs') {
+        const js = await readFile(join(UI_ROOT, 'view-model.mjs'));
         send(res, 200, 'text/javascript; charset=utf-8', js, buildCorsHeaders(req));
         return;
       }

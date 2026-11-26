@@ -22,6 +22,7 @@
  * starts lazily once when Magpie invokes `server(input, options)`.
  */
 
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const DEFAULT_PORT = 18787;
@@ -36,23 +37,22 @@ function resolvePort(options) {
   return DEFAULT_PORT;
 }
 
-function resolveIsolatedDataDir(input) {
-  if (process.env.USAGE_MONITOR_DATA_DIR) {
-    return process.env.USAGE_MONITOR_DATA_DIR;
-  }
+export function resolvePluginDataDir(input, env = process.env) {
   const baseDir = String(input?.directory || '').trim();
   if (baseDir) {
-    const dir = join(baseDir, '.antigravity-monitor');
-    process.env.USAGE_MONITOR_DATA_DIR = dir;
-    return dir;
+    return join(baseDir, '.antigravity-monitor');
   }
-  return '';
+  const envDir = String(env?.USAGE_MONITOR_DATA_DIR || '').trim();
+  if (envDir) {
+    return envDir;
+  }
+  return join(tmpdir(), 'magpie-antigravity-monitor-data');
 }
 
 function start(input, options) {
   if (!started) {
     started = (async () => {
-      resolveIsolatedDataDir(input);
+      process.env.USAGE_MONITOR_DATA_DIR = resolvePluginDataDir(input, process.env);
       const { installBunSqliteShim } = await import('./src/telemetry/index.mjs');
       await installBunSqliteShim();
       const { startMonitorHttpServer } = await import('./src/server/http-server.mjs');

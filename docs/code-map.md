@@ -15,6 +15,7 @@
 | [src/ui/index.html](../src/ui/index.html) | UI | Four-tab monitor dashboard HTML shell | Relative `./` asset URLs only |
 | [src/ui/styles.css](../src/ui/styles.css) | UI | Light/dark responsive dashboard styles inheriting `--magpie-*` tokens | Pure CSS, zero external assets |
 | [src/ui/app.js](../src/ui/app.js) | UI | Four-tab dashboard (`Overview`, `Steps`, `Analytics`, `Settings`) | Safe DOM construction (`textContent`), polling via `window.sidecar.fetch` |
+| [src/ui/view-model.mjs](../src/ui/view-model.mjs) | UI | Pure view-model mappers for quota pools, 10-channel context, multi-agent steps, and analytics | Matches exact `telemetry-builder.mjs` / `usage-aggregator.mjs` schemas |
 | [data/pricing-catalog.json](../data/pricing-catalog.json) | Data | Bundled fallback model pricing catalog | Read-only fallback; never mutated at runtime |
 | [src/runtime/bun-sqlite-shim.mjs](../src/runtime/bun-sqlite-shim.mjs) | Runtime | Adapts `bun:sqlite` to `globalThis.DatabaseSync` for Bun hosts | Installed before SQLite readers; `{ readOnly: true }` enforced |
 | [src/runtime/paths.mjs](../src/runtime/paths.mjs) | Runtime | Resolves isolated `DATA_DIR`, read-only `~/.gemini/antigravity*` roots, and runtime endpoint/cache state | Never writes into `~/.gemini` or `~/.config/magpie` |
@@ -51,8 +52,9 @@
 | [test/allowlist.test.mjs](../test/allowlist.test.mjs) | Tests | Verifies fail-closed API route allowlist and settings sanitizer | Zero network |
 | [test/pricing-sync.test.mjs](../test/pricing-sync.test.mjs) | Tests | Verifies `pricing-catalog.json` sync schema validation and TTL caching | Mocked fetch, temp dir |
 | [test/telemetry-kernel.test.mjs](../test/telemetry-kernel.test.mjs) | Tests | Verifies offline `buildTelemetryPayload` (zero fetch), strict loopback RPC guard, LS discovery, and pricing lookup | Temp `dataDir`/`geminiDir` only |
-| [test/http-server.test.mjs](../test/http-server.test.mjs) | Tests | Verifies `Sec-Fetch-Mode: navigate`, `Host`/`Origin` guards, `X-Usage-Monitor-Token`, allowlist enforcement, and asset serving | Loopback ephemeral port, temp dirs |
-| [test/plugin-lifecycle.test.mjs](../test/plugin-lifecycle.test.mjs) | Tests | Verifies `package.json` manifest, `page/` sandbox invariants, and rolling-restart `EADDRINUSE` recovery | Loopback ephemeral port, temp dirs |
+| [test/http-server.test.mjs](../test/http-server.test.mjs) | Tests | Verifies `Sec-Fetch-Mode: navigate` / plain-HTML LAN nav, `Host`/`Origin` guards, preflight CORS, `X-Usage-Monitor-Token`, and asset serving | Loopback ephemeral port, temp dirs |
+| [test/plugin-lifecycle.test.mjs](../test/plugin-lifecycle.test.mjs) | Tests | Verifies `package.json` manifest, `input.directory` isolation, `page/` sandbox invariants, and non-blocking `EADDRINUSE` recovery | Loopback ephemeral port, temp dirs |
+| [test/ui-view-model.test.mjs](../test/ui-view-model.test.mjs) | Tests | Verifies non-empty telemetry rendering models (weekly-only pools, 10-channel context, multi-agent newest steps, analytics) | Pure unit tests |
 
 ## Planned layers (upcoming branches)
 

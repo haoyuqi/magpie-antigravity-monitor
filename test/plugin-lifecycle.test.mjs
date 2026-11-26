@@ -11,7 +11,7 @@ process.env.ANTIGRAVITY_LS_ADDRESS = 'test.invalid';
 
 const { after, describe, it } = await import('node:test');
 const { startMonitorHttpServer } = await import('../src/server/http-server.mjs');
-const pluginMod = (await import('../index.mjs')).default;
+const { default: pluginMod, resolvePluginDataDir } = await import('../index.mjs');
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -32,6 +32,19 @@ describe('plugin manifest, sandbox launcher, and EADDRINUSE lifecycle', () => {
 
     assert.equal(pluginMod.id, 'magpie-antigravity-monitor');
     assert.equal(typeof pluginMod.server, 'function');
+
+    // input.directory must take precedence over inherited USAGE_MONITOR_DATA_DIR
+    assert.equal(
+      resolvePluginDataDir(
+        { directory: '/tmp/magpie-plugin-dir' },
+        { USAGE_MONITOR_DATA_DIR: '/tmp/inherited-env-dir' }
+      ),
+      join('/tmp/magpie-plugin-dir', '.antigravity-monitor')
+    );
+
+    // Empty input.directory without env must fall back to os.tmpdir(), never REPO_ROOT/.data
+    const fallbackDir = resolvePluginDataDir({}, {});
+    assert.equal(fallbackDir.startsWith(REPO_ROOT), false);
   });
 
   it('enforces Magpie sandbox invariants on page/index.html and page/boot.js', () => {
@@ -56,7 +69,7 @@ describe('plugin manifest, sandbox launcher, and EADDRINUSE lifecycle', () => {
     assert.ok(bootCode.includes('location.replace('));
   });
 
-  it('retries EADDRINUSE in the background during Magpie rolling restarts and binds once released', async () => {
+  it('retries EADDRINUSE in the background with default bindTries without blocking startup', async () => {
     const blocker = http.createServer((_req, res) => {
       res.writeHead(200);
       res.end('old-host');
@@ -66,15 +79,16 @@ describe('plugin manifest, sandbox launcher, and EADDRINUSE lifecycle', () => {
 
     let monitor = null;
     try {
+      const startMs = Date.now();
       monitor = await startMonitorHttpServer({
         port: busyPort,
-        bindTries: 2,
-        bindRetryDelayMs: 25,
         bgRetryIntervalMs: 40,
       });
+      const elapsedMs = Date.now() - startMs;
 
       assert.equal(monitor.listening, false);
       assert.equal(monitor.port, busyPort);
+      assert.ok(elapsedMs < 300, `Expected non-blocking startup, took ${elapsedMs}ms`);
 
       await new Promise((resolve) => blocker.close(resolve));
       const boundPort = await monitor.ready;

@@ -1,3 +1,14 @@
+import {
+  collectOrderedAgentSteps,
+  extractContextChannels,
+  extractModelBreakdownRows,
+  extractTrendBars,
+  extractUsageSummaryView,
+  extractWorkspaceRows,
+  getAgentViews,
+  normalizeQuotaPoolView,
+} from './view-model.mjs';
+
 (() => {
   const CHANNEL_COLORS = [
     '#3b82f6',
@@ -260,8 +271,8 @@
     if (state.selectedAgentId === 'all' && ac.aggregated) {
       return ac.aggregated;
     }
-    const views = Array.isArray(ac.agentViews) ? ac.agentViews : [];
-    return views.find((v) => v.id === state.selectedAgentId) || views[0] || ac;
+    const views = getAgentViews(ac);
+    return views.find((v) => v.agentId === state.selectedAgentId) || views[0] || ac;
   }
 
   function renderOverviewTab() {
@@ -323,18 +334,26 @@
         })
       );
     } else {
+      const activePoolKey = state.payload?.quotas?.activePool?.poolKey || '';
       const list = h('div', { className: 'quota-list' });
-      for (const pool of pools) {
-        const remPct = Number(pool.remainingPct ?? pool.fiveHour?.remainingPct);
-        const pct = Number.isFinite(remPct) ? Math.max(0, Math.min(100, remPct)) : 0;
+      for (const rawPool of pools) {
+        const pool = normalizeQuotaPoolView(rawPool, activePoolKey);
+        const pct = pool.primaryPct;
         const fillCls =
           pct <= 15 ? 'progress-fill is-danger' : pct <= 35 ? 'progress-fill is-warn' : 'progress-fill';
-        const resetIso = pool.resetTime || pool.fiveHour?.resetTime || '';
-        const wkPct = pool.weekly?.remainingPct;
+        const leftText = pool.has5h
+          ? `5h: ${fmtPct(pool.fiveHourPct)} · Reset ${fmtRemainingTime(pool.resetTime)}`
+          : pool.hasWeekly
+            ? `Weekly: ${fmtPct(pool.weeklyPct)} · Reset ${fmtRemainingTime(pool.weeklyResetTime)}`
+            : 'Unavailable';
+        const rightText =
+          pool.has5h && pool.hasWeekly
+            ? `Weekly: ${fmtPct(pool.weeklyPct)} · Reset ${fmtRemainingTime(pool.weeklyResetTime)}`
+            : '';
         list.appendChild(
           h('div', { className: 'quota-item' }, [
             h('div', { className: 'quota-row' }, [
-              h('strong', { textContent: pool.poolName || pool.poolLabel || pool.poolKey }),
+              h('strong', { textContent: pool.poolName }),
               h('span', {
                 className: pool.isActive ? 'pill pill-accent' : 'pill pill-muted',
                 textContent: pool.isActive ? 'Active' : `${pct.toFixed(0)}% left`,
@@ -344,11 +363,8 @@
               h('div', { className: fillCls, style: `width:${pct}%` }),
             ]),
             h('div', { className: 'quota-row', style: 'margin-top:6px;margin-bottom:0;' }, [
-              h('span', { className: 'muted', textContent: `5h: ${fmtPct(pct)} · Reset ${fmtRemainingTime(resetIso)}` }),
-              h('span', {
-                className: 'muted',
-                textContent: Number.isFinite(Number(wkPct)) ? `Weekly: ${fmtPct(wkPct)}` : '',
-              }),
+              h('span', { className: 'muted', textContent: leftText }),
+              h('span', { className: 'muted', textContent: rightText }),
             ]),
           ])
         );
@@ -359,22 +375,22 @@
 
     // 10-channel context breakdown
     const ctxCard = h('div', { className: 'card' });
-    const views = Array.isArray(ac.agentViews) ? ac.agentViews : [];
+    const views = getAgentViews(ac);
     const switcher = h('div', { className: 'toolbar' });
     for (const v of views) {
       switcher.appendChild(
         h('button', {
           type: 'button',
-          className: `btn btn-sm${state.selectedAgentId === v.id ? ' is-active' : ''}`,
-          textContent: v.shortLabel || v.label || v.id,
+          className: `btn btn-sm${state.selectedAgentId === v.agentId ? ' is-active' : ''}`,
+          textContent: v.shortLabel || v.role || v.agentId,
           onClick: () => {
-            state.selectedAgentId = v.id;
+            state.selectedAgentId = v.agentId;
             renderOverviewTab();
           },
         })
       );
     }
-    if (ac.aggregated) {
+    if (ac.aggregated && views.length > 1) {
       switcher.appendChild(
         h('button', {
           type: 'button',
@@ -397,9 +413,8 @@
       ])
     );
 
-    const channels = Array.isArray(ctx.channels) ? ctx.channels : [];
-    const nonZeroTotal = channels.reduce((sum, ch) => sum + Number(ch.tokens || 0), 0);
-    if (channels.length === 0 || nonZeroTotal <= 0) {
+    const { channels, totalChannelTokens } = extractContextChannels(ctx);
+    if (totalChannelTokens <= 0) {
       ctxCard.appendChild(
         h('div', { className: 'empty-state', textContent: 'No context breakdown data for this view.' })
       );
@@ -407,15 +422,15 @@
       const bar = h('div', { className: 'stacked-bar' });
       const legend = h('div', { className: 'channel-grid' });
       channels.forEach((ch, idx) => {
-        const tok = Number(ch.tokens || 0);
-        const pct = nonZeroTotal > 0 ? (tok / nonZeroTotal) * 100 : 0;
+        const tok = ch.tokens;
+        const pct = totalChannelTokens > 0 ? (tok / totalChannelTokens) * 100 : 0;
         const color = CHANNEL_COLORS[idx % CHANNEL_COLORS.length];
         if (tok > 0) {
           bar.appendChild(
             h('div', {
               className: 'stacked-seg',
               style: `width:${pct.toFixed(2)}%;background:${color}`,
-              title: `${ch.label || ch.key}: ${fmtTokens(tok)} (${pct.toFixed(1)}%)`,
+              title: `${ch.label}: ${fmtTokens(tok)} (${pct.toFixed(1)}%)`,
             })
           );
         }
@@ -423,7 +438,7 @@
           h('div', { className: 'channel-row' }, [
             h('span', {}, [
               h('span', { className: 'swatch', style: `background:${color}` }),
-              ch.label || ch.key,
+              ch.label,
             ]),
             h('span', { className: 'mono muted', textContent: `${fmtTokens(tok)} (${pct.toFixed(1)}%)` }),
           ])
@@ -447,14 +462,15 @@
     const root = document.getElementById('tab-steps');
     root.replaceChildren();
     const ac = state.payload?.activeConversation;
-    const steps = Array.isArray(ac?.recentSteps) ? ac.recentSteps : [];
-    const views = Array.isArray(ac?.agentViews) ? ac.agentViews : [];
+    const views = getAgentViews(ac);
+    const allOrdered = collectOrderedAgentSteps(ac, 'all', 200);
+    const filtered = collectOrderedAgentSteps(ac, state.stepFilterAgent, 200);
 
     const filterBar = h('div', { className: 'toolbar' }, [
       h('button', {
         type: 'button',
         className: `btn btn-sm${state.stepFilterAgent === 'all' ? ' is-active' : ''}`,
-        textContent: `All (${steps.length})`,
+        textContent: `All (${ac?.totalStepsAllAgents ?? allOrdered.length})`,
         onClick: () => {
           state.stepFilterAgent = 'all';
           renderStepsTab();
@@ -463,20 +479,15 @@
       ...views.map((v) =>
         h('button', {
           type: 'button',
-          className: `btn btn-sm${state.stepFilterAgent === v.id ? ' is-active' : ''}`,
-          textContent: v.shortLabel || v.label || v.id,
+          className: `btn btn-sm${state.stepFilterAgent === v.agentId ? ' is-active' : ''}`,
+          textContent: v.shortLabel || v.role || v.agentId,
           onClick: () => {
-            state.stepFilterAgent = v.id;
+            state.stepFilterAgent = v.agentId;
             renderStepsTab();
           },
         })
       ),
     ]);
-
-    const filtered =
-      state.stepFilterAgent === 'all'
-        ? steps
-        : steps.filter((s) => (s.agentId || 'main') === state.stepFilterAgent);
 
     const card = h('div', { className: 'card' }, [
       h('div', { className: 'card-header' }, [
@@ -492,7 +503,7 @@
     }
 
     const tbody = h('tbody');
-    for (const st of filtered.slice(-200).reverse()) {
+    for (const st of filtered) {
       tbody.appendChild(
         h('tr', {}, [
           h('td', { className: 'mono', textContent: `#${st.stepIndex ?? '--'}` }),
@@ -541,7 +552,7 @@
     const root = document.getElementById('tab-analytics');
     root.replaceChildren();
     const cons = state.payload?.consumption || {};
-    const acct = cons.account || {};
+    const acct = extractUsageSummaryView(cons);
 
     const rangeBar = h(
       'div',
@@ -569,15 +580,15 @@
           rangeBar,
         ]),
         h('div', { className: 'grid-kpi', style: 'margin-bottom:0;' }, [
-          kpiCard('Total Tokens', fmtTokens(acct.totalTokens), `${fmtInt(acct.stepCount)} steps`),
-          kpiCard('Input + Cache', fmtTokens((acct.inputTokens || 0) + (acct.cacheReadTokens || 0)), `Cache hit: ${fmtPct(acct.cacheHitPct)}`),
-          kpiCard('Output + Think', fmtTokens((acct.outputTokens || 0) + (acct.thinkingTokens || 0)), `Output: ${fmtTokens(acct.outputTokens)}`),
-          kpiCard('Estimated Cost', fmtUsd(acct.totalCostUsd), `${fmtInt(acct.conversationCount)} sessions`),
+          kpiCard('Total Tokens', fmtTokens(acct.totalTokens), `${fmtInt(acct.calls)} calls`),
+          kpiCard('Input + Cache', fmtTokens(acct.inputTokens + acct.cacheReadTokens), `Cache hit: ${fmtPct(acct.cacheHitPct)}`),
+          kpiCard('Output + Think', fmtTokens(acct.outputTokens + acct.thinkingTokens), `Output: ${fmtTokens(acct.outputTokens)}`),
+          kpiCard('Estimated Cost', fmtUsd(acct.costUsd), `${fmtInt(acct.conversationsCount)} sessions`),
         ]),
       ])
     );
 
-    const series = Array.isArray(cons.trendSeries) ? cons.trendSeries : [];
+    const series = extractTrendBars(cons);
     const trendCard = h('div', { className: 'card' }, [
       h('div', { className: 'card-header' }, [
         h('h2', { className: 'card-title', textContent: 'Token Trend' }),
@@ -586,15 +597,14 @@
     if (series.length === 0) {
       trendCard.appendChild(h('div', { className: 'empty-state', textContent: 'No trend data in range.' }));
     } else {
-      const maxVal = Math.max(1, ...series.map((b) => Number(b.totalTokens || 0)));
+      const maxVal = Math.max(1, ...series.map((b) => b.tokens));
       const bars = h('div', { className: 'chart-bars' });
       for (const b of series) {
-        const val = Number(b.totalTokens || 0);
-        const hPct = Math.max(2, Math.round((val / maxVal) * 100));
+        const hPct = Math.max(2, Math.round((b.tokens / maxVal) * 100));
         bars.appendChild(
-          h('div', { className: 'chart-col', title: `${b.fullLabel || b.label}: ${fmtTokens(val)} (${fmtUsd(b.totalCostUsd)})` }, [
+          h('div', { className: 'chart-col', title: `${b.fullLabel}: ${fmtTokens(b.tokens)} (${fmtUsd(b.costUsd)})` }, [
             h('div', { className: 'chart-bar', style: `height:${hPct}%` }),
-            h('div', { className: 'chart-lbl', textContent: b.label || '' }),
+            h('div', { className: 'chart-lbl', textContent: b.label }),
           ])
         );
       }
@@ -602,21 +612,21 @@
     }
     root.appendChild(trendCard);
 
-    const models = Array.isArray(state.payload?.modelBreakdown) ? state.payload.modelBreakdown : [];
-    const workspaces = Array.isArray(cons.topWorkspaces) ? cons.topWorkspaces : [];
+    const models = extractModelBreakdownRows(state.payload);
+    const workspaces = extractWorkspaceRows(cons);
     root.appendChild(
       h('div', { className: 'grid-two' }, [
-        renderSimpleTableCard('Model Breakdown', ['Model', 'Steps', 'Tokens', 'Cost'], models.map((m) => [
-          m.modelLabel || m.modelShort || m.modelKey,
-          fmtInt(m.stepCount),
+        renderSimpleTableCard('Model Breakdown', ['Model', 'Calls', 'Tokens', 'Cost'], models.map((m) => [
+          m.label,
+          fmtInt(m.calls),
           fmtTokens(m.totalTokens),
-          fmtUsd(m.totalCostUsd),
+          fmtUsd(m.costUsd),
         ])),
         renderSimpleTableCard('Top Workspaces', ['Workspace', 'Sessions', 'Tokens', 'Cost'], workspaces.map((w) => [
-          w.label || w.workspacePath || 'Unknown',
-          fmtInt(w.conversationCount),
+          w.label,
+          fmtInt(w.sessionCount),
           fmtTokens(w.totalTokens),
-          fmtUsd(w.totalCostUsd),
+          fmtUsd(w.costUsd),
         ])),
       ])
     );

@@ -1,0 +1,181 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import {
+  collectOrderedAgentSteps,
+  extractContextChannels,
+  extractModelBreakdownRows,
+  extractTrendBars,
+  extractUsageSummaryView,
+  extractWorkspaceRows,
+  getAgentViews,
+  normalizeQuotaPoolView,
+} from '../src/ui/view-model.mjs';
+
+describe('UI telemetry view-model', () => {
+  it('normalizes 5h+weekly and weekly-only quota pools using backend fields', () => {
+    const dualPool = normalizeQuotaPoolView(
+      {
+        poolKey: 'Gemini',
+        poolName: 'Gemini Model Pool',
+        has5h: true,
+        remainingPct: 64.2,
+        resetTime: '2099-01-01T05:00:00Z',
+        hasWeekly: true,
+        weeklyRemainingPct: 88.5,
+        weeklyResetTime: '2099-01-07T00:00:00Z',
+      },
+      'Gemini'
+    );
+    assert.equal(dualPool.isActive, true);
+    assert.equal(dualPool.has5h, true);
+    assert.equal(dualPool.fiveHourPct, 64.2);
+    assert.equal(dualPool.hasWeekly, true);
+    assert.equal(dualPool.weeklyPct, 88.5);
+    assert.equal(dualPool.primaryWindow, '5h');
+    assert.equal(dualPool.primaryPct, 64.2);
+
+    const weeklyOnlyPool = normalizeQuotaPoolView(
+      {
+        poolKey: 'Claude & GPT',
+        poolName: 'Claude & GPT Model Pool',
+        has5h: false,
+        remainingPct: null,
+        resetTime: null,
+        hasWeekly: true,
+        weeklyRemainingPct: 82.5,
+        weeklyResetTime: '2099-01-07T00:00:00Z',
+      },
+      'Gemini'
+    );
+    assert.equal(weeklyOnlyPool.isActive, false);
+    assert.equal(weeklyOnlyPool.has5h, false);
+    assert.equal(weeklyOnlyPool.fiveHourPct, null);
+    assert.equal(weeklyOnlyPool.hasWeekly, true);
+    assert.equal(weeklyOnlyPool.weeklyPct, 82.5);
+    assert.equal(weeklyOnlyPool.primaryWindow, 'weekly');
+    assert.equal(weeklyOnlyPool.primaryPct, 82.5);
+  });
+
+  it('extracts all 10 flat context channels from telemetry-builder context object', () => {
+    const res = extractContextChannels({
+      totalTokens: 1500,
+      userInputTokens: 100,
+      assistantTokens: 200,
+      toolResultsTokens: 300,
+      subagentTokens: 50,
+      checkpointTokens: 25,
+      systemToolsTokens: 125,
+      mcpToolsTokens: 75,
+      skillsTokens: 40,
+      systemPromptTokens: 400,
+      userRulesTokens: 185,
+      cachedTokens: 900,
+      freshInputTokens: 600,
+    });
+    assert.equal(res.channels.length, 10);
+    assert.equal(res.totalChannelTokens, 1500);
+    assert.equal(res.channels[0].key, 'userInputTokens');
+    assert.equal(res.channels[0].tokens, 100);
+    assert.equal(res.channels[9].key, 'userRulesTokens');
+    assert.equal(res.channels[9].tokens, 185);
+    assert.equal(res.cachedTokens, 900);
+    assert.equal(res.freshInputTokens, 600);
+  });
+
+  it('collects newest-first steps across agents[] without dropping subagent or newest steps', () => {
+    const mainSteps = [];
+    for (let i = 220; i >= 1; i--) {
+      mainSteps.push({
+        stepIndex: i,
+        createdAtMs: 1000 + i * 10,
+        agentId: 'main',
+        agentBadge: 'M',
+        modelShort: '2.5 Pro',
+      });
+    }
+    const subSteps = [
+      {
+        stepIndex: 5,
+        createdAtMs: 1000 + 221 * 10,
+        agentId: 'subagent-1',
+        agentBadge: 'S1',
+        modelShort: '2.5 Flash',
+      },
+      {
+        stepIndex: 4,
+        createdAtMs: 1000 + 205 * 10,
+        agentId: 'subagent-1',
+        agentBadge: 'S1',
+        modelShort: '2.5 Flash',
+      },
+    ];
+    const activeConversation = {
+      agents: [
+        { agentId: 'main', shortLabel: 'Main Agent', badgeText: 'M', recentSteps: mainSteps },
+        { agentId: 'subagent-1', shortLabel: 'Subagent #1', badgeText: 'S1', recentSteps: subSteps },
+      ],
+    };
+
+    assert.equal(getAgentViews(activeConversation).length, 2);
+
+    const allTop = collectOrderedAgentSteps(activeConversation, 'all', 200);
+    assert.equal(allTop.length, 200);
+    assert.equal(allTop[0].agentId, 'subagent-1');
+    assert.equal(allTop[0].stepIndex, 5);
+    assert.equal(allTop[1].agentId, 'main');
+    assert.equal(allTop[1].stepIndex, 220);
+
+    const subOnly = collectOrderedAgentSteps(activeConversation, 'subagent-1', 200);
+    assert.equal(subOnly.length, 2);
+    assert.equal(subOnly[0].stepIndex, 5);
+  });
+
+  it('maps usage summary, trend series, model breakdown, and top workspaces from backend fields', () => {
+    const consumption = {
+      account: {
+        calls: 42,
+        conversationsCount: 6,
+        inputTokens: 1200,
+        cacheReadTokens: 8800,
+        outputTokens: 2000,
+        thinkingTokens: 500,
+        totalTokens: 12000,
+        costUsd: 1.45,
+        cacheHitPct: 88.0,
+      },
+      trendSeries: [
+        { label: '10:00', fullLabel: 'Nov 26 10:00 - 11:00', tokens: 7000, costUsd: 0.9 },
+      ],
+      topWorkspaces: [
+        { label: 'magpie-antigravity-monitor', sessionCount: 4, totalTokens: 9000, costUsd: 1.1 },
+      ],
+    };
+    const payload = {
+      modelBreakdown: [
+        { label: 'Gemini 2.5 Pro', calls: 30, totalTokens: 10000, costUsd: 1.2 },
+      ],
+      consumption,
+    };
+
+    const summary = extractUsageSummaryView(consumption);
+    assert.equal(summary.calls, 42);
+    assert.equal(summary.conversationsCount, 6);
+    assert.equal(summary.costUsd, 1.45);
+    assert.equal(summary.totalTokens, 12000);
+
+    const bars = extractTrendBars(consumption);
+    assert.deepEqual(bars, [
+      { label: '10:00', fullLabel: 'Nov 26 10:00 - 11:00', tokens: 7000, costUsd: 0.9 },
+    ]);
+
+    const models = extractModelBreakdownRows(payload);
+    assert.deepEqual(models, [
+      { label: 'Gemini 2.5 Pro', calls: 30, totalTokens: 10000, costUsd: 1.2 },
+    ]);
+
+    const workspaces = extractWorkspaceRows(consumption);
+    assert.deepEqual(workspaces, [
+      { label: 'magpie-antigravity-monitor', sessionCount: 4, totalTokens: 9000, costUsd: 1.1 },
+    ]);
+  });
+});
