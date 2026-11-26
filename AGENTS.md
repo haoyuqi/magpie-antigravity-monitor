@@ -9,7 +9,7 @@
 ## Engineering guardrails
 
 - **Runtime & dependencies**: Pure ESM, zero external npm dependencies, targeting Magpie's bundled **Bun** plugin host. Because Bun lacks `node:sqlite`, inject a `bun:sqlite` -> `globalThis.DatabaseSync` shim before loading SQLite readers.
-- **Read-only invariant**: Never mutate external Antigravity files/processes or write to Magpie's usage ledger.
+- **Read-only invariant**: Strictly local-disk read-only telemetry (zero Antigravity Language Server RPC, zero process/port scanning, zero `hub_*.json` reads, zero official quota polling, zero OAuth/keyring access); never mutate external Antigravity files/processes or write to Magpie's usage ledger.
 - **Magpie sandbox & local service**:
   - Launcher (`page/`) runs under `sandbox="allow-scripts"` and `connect-src 'none'`: no inline scripts, no `fetch`/`XHR`/`WebSocket` probes, no `localStorage`/`cookie` access; navigate only via `location.replace(...)` after reading `_magpie/bridge.js`.
   - Bind local service strictly to `127.0.0.1`; enforce `Host`, `Origin` (absent, `null`, or same-origin), `Sec-Fetch-Mode: navigate` (or `Accept: text/html` with no `Origin` and no `Sec-Fetch-Mode` for plain-HTTP `magpie web --lan` navigations) on token-bearing HTML, and persistent header token (`X-Usage-Monitor-Token`, never `Set-Cookie`).

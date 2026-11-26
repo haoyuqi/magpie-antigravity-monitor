@@ -25,7 +25,6 @@ export const ALLOWED_API_ROUTES = Object.freeze([
   Object.freeze({ method: 'POST', path: '/api/settings/reset' }),
   Object.freeze({ method: 'POST', path: '/api/cache/rebuild' }),
   Object.freeze({ method: 'POST', path: '/api/cloud-sync' }),
-  Object.freeze({ method: 'GET', path: '/api/quota-reservation/log' }),
 ]);
 
 const ALLOWED_ROUTE_SET = new Set(ALLOWED_API_ROUTES.map((r) => `${r.method}:${r.path}`));

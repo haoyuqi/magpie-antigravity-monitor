@@ -23,36 +23,12 @@ import { trajectoryCacheStore } from '../runtime/paths.mjs';
 
 export const LOCAL_ENDPOINT_ID = 'local';
 
-const localQuotaCache = {
-  payload: null,
-  fetchedAtMs: 0,
-  lastAttemptMs: 0,
-  accountKey: '',
-  inFlight: null,
-};
-
 export function getEndpointCacheStore() {
   return trajectoryCacheStore;
 }
 
-export function getEndpointQuotaCache() {
-  return localQuotaCache;
-}
-
 export function getRegisteredRemoteEndpoint() {
   return null;
-}
-
-export function getRemoteWindowRpcInvoker() {
-  return null;
-}
-
-export function shouldRemoteEndpointPreferTier2() {
-  return false;
-}
-
-export function markRemoteEndpointPreferTier2() {
-  return {};
 }
 
 export function flushAllEndpointCachesNow() {

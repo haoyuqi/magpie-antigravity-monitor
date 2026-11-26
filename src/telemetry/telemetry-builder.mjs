@@ -1,13 +1,11 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview Telemetry payload assembler and in-flight request deduplication entry point.
+ * @fileoverview Strictly local-disk read-only telemetry payload assembler and in-flight deduplication entry point.
  *
- * Splits telemetry construction into clear sub-stages:
- * 1. Fetch user status, trajectory summaries, and official live quota summary (with account-switch cache validation);
- * 2. Call `buildOfficialQuotaPools` to build the dynamic model map and multi-model quota pools;
- * 3. Call `enumerateAndSyncConversations` to enumerate conversations and incrementally update the trajectory cache;
- * 4. Call `enrichActiveConversationSteps` and `extractActiveContextTelemetry` to compute active conversation metrics and the 10-channel context breakdown;
- * 5. Call `aggregateMultiWindowUsage` to complete multi-window aggregation and assemble the compact frontend telemetry JSON.
+ * Splits telemetry construction into clear local-only sub-stages:
+ * 1. Read local Antigravity summary snapshots and incrementally sync trajectory SQLite/WAL caches;
+ * 2. Call `buildActiveConversationAssembly` to compute active conversation metrics and the 10-channel context breakdown;
+ * 3. Call `aggregateMultiWindowUsage` to complete multi-window aggregation and assemble the compact frontend telemetry JSON.
  */
 
 import { isDeepStrictEqual } from 'node:util';
@@ -22,10 +20,9 @@ import {
   summarizeTtft,
 } from './trajectory-metrics.mjs';
 import {
-    computeRuntimeCodeVersion,
+  computeRuntimeCodeVersion,
   inFlightRequests,
   loadSettings,
-  lsRuntimeEndpoint,
   roundMetric,
   saveJson,
 } from '../runtime/paths.mjs';
@@ -35,8 +32,6 @@ const getContextWindowModels = () => [];
 const getCliStatusLineRuntimeStatus = () => ({ configured: false, supported: false });
 import { readLocalSummarySnapshot } from './cli-sqlite-reader.mjs';
 import { enumerateAndSyncConversations } from './local-scanner.mjs';
-import { ensureLsEndpointDiscovered } from './ls-discovery.mjs';
-import { callLsRpc, getContextModelCatalog, getOfficialQuotaSummary } from './ls-rpc.mjs';
 import {
   computeStepCost,
   createStepModelResolver,
@@ -45,9 +40,6 @@ import {
   isCarbonModelIdentifier,
 } from './model-pricing.mjs';
 import { getCloudStatus, getPricingPhaseEpoch, pricingCatalogRevision } from './pricing-catalog.mjs';
-import { buildOfficialQuotaPools } from './quota-pools.mjs';
-import { recordAccountQuotaSnapshot } from './account-quota-history.mjs';
-import { updatePoolQuotaReservationEstimates } from './quota-reservation.mjs';
 const getDefaultCloudCodeProxyStatus = () => ({ active: false, supported: false });
 const getDefaultWindowBridgeStatus = () => ({ active: false, supported: false, mode: 'magpie' });
 import {
@@ -72,6 +64,11 @@ const conversationAssemblyCache = new Map();
 const lastCompletedTelemetrySnapshotsByEndpoint = new Map();
 
 let telemetryMemoGeneration = 0;
+let beforeTelemetryReadHookForTest = null;
+
+export function setBeforeTelemetryReadHookForTest(fn) {
+  beforeTelemetryReadHookForTest = typeof fn === 'function' ? fn : null;
+}
 
 export function clearTelemetryBuilderMemo(endpointId = null) {
   telemetryMemoGeneration += 1;
@@ -89,6 +86,7 @@ export function clearTelemetryBuilderMemo(endpointId = null) {
         inFlightRequests.delete(key);
       }
     }
+    inFlightTelemetrySources.clear();
     clearUsageAggregatorMemo(epKey);
     return;
   }
@@ -96,6 +94,7 @@ export function clearTelemetryBuilderMemo(endpointId = null) {
   conversationAssemblyCache.clear();
   lastCompletedTelemetrySnapshotsByEndpoint.clear();
   inFlightRequests.clear();
+  inFlightTelemetrySources.clear();
   clearUsageAggregatorMemo();
 }
 
@@ -934,25 +933,19 @@ async function readTelemetrySources(
   forceQuotaRefresh,
   currentAccountName,
   accountScope,
-  userStatus,
+  _userStatus,
   endpoint = null
 ) {
+  if (beforeTelemetryReadHookForTest) {
+    await beforeTelemetryReadHookForTest();
+  }
   const isRemote = Boolean(endpoint && endpoint.isRemote);
   const localSummaries = isRemote
     ? { available: false, summariesObj: {}, sideQuestionParents: {} }
     : readLocalSummarySnapshot(undefined, { forceRefresh: forceQuotaRefresh });
-  const [allTrajRes, officialQuotaInfo, contextModelCatalog] = await Promise.all([
-    localSummaries.available
-      ? Promise.resolve(null)
-      : callLsRpc('GetAllCascadeTrajectories', {}, 5000, endpoint).catch(() => ({})),
-    userStatus ? getOfficialQuotaSummary(forceQuotaRefresh, currentAccountName, endpoint) : null,
-    getContextModelCatalog(endpoint),
-  ]);
 
   const sessions = await enumerateAndSyncConversations({
-    summariesObj: localSummaries.available
-      ? localSummaries.summariesObj
-      : allTrajRes?.trajectorySummaries || {},
+    summariesObj: localSummaries.available ? localSummaries.summariesObj : {},
     summariesFromLocalDb: localSummaries.available,
     sideQuestionParents: localSummaries.available ? localSummaries.sideQuestionParents : {},
     currentAccountName: accountScope,
@@ -960,7 +953,7 @@ async function readTelemetrySources(
     forceRefresh: forceQuotaRefresh,
     endpoint,
   });
-  return { officialQuotaInfo, contextModelCatalog, sessions };
+  return { officialQuotaInfo: null, contextModelCatalog: null, sessions };
 }
 
 function getTelemetrySources(
@@ -1777,47 +1770,18 @@ export async function buildTelemetryPayloadInternal(
   const cacheStore = getEndpointCacheStore(endpoint);
 
   const settings = loadSettings();
-  let userStatus = await callLsRpc('GetUserStatus', {}, 5000, endpoint)
-    .then((data) => data?.userStatus)
-    .catch(() => null);
-  if (
-    !isRemote &&
-    !userStatus &&
-    lsRuntimeEndpoint.addr !== 'test.invalid' &&
-    (!lsRuntimeEndpoint.baseUrl || lsRuntimeEndpoint.isDynamic)
-  ) {
-    const prevBaseUrl = lsRuntimeEndpoint.baseUrl;
-    const prevCsrf = lsRuntimeEndpoint.csrfToken;
-    await ensureLsEndpointDiscovered({
-      force: true,
-      respectCooldown: !forceQuotaRefresh,
-    });
-    if (
-      lsRuntimeEndpoint.baseUrl &&
-      (lsRuntimeEndpoint.baseUrl !== prevBaseUrl || lsRuntimeEndpoint.csrfToken !== prevCsrf)
-    ) {
-      userStatus = await callLsRpc('GetUserStatus', {})
-        .then((data) => data?.userStatus)
-        .catch(() => null);
-    }
-  }
-  const currentAccountName = userStatus?.email || userStatus?.name || '';
-  const accountStatus = currentAccountName ? 'signedIn' :
-    userStatus && !userStatus.userTier && !userStatus.planStatus ? 'signedOut' : 'unknown';
-  const accountScope = accountStatus === 'signedOut' ? null : currentAccountName;
+  const userStatus = null;
+  const currentAccountName = '';
+  const accountStatus = 'local';
+  const accountScope = '';
   const { officialQuotaInfo, contextModelCatalog, sessions } = await getTelemetrySources(
     requestedConvId, forceQuotaRefresh, currentAccountName, accountScope, userStatus, endpoint
   );
   const { conversations, activeConvSummary, activeCascadeId } = sessions;
 
-  const officialQuota = officialQuotaInfo?.data || null;
-  const clientConfigs = userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
-
-  // 1. Build official live quota pools and dynamic model catalog
-  const { dynamicModelMap, quotaPoolsMap } = buildOfficialQuotaPools(
-    officialQuota,
-    clientConfigs
-  );
+  const clientConfigs = [];
+  const dynamicModelMap = new Map();
+  const quotaPoolsMap = new Map();
 
   const resolveStepModel = createStepModelResolver(dynamicModelMap);
 
@@ -1846,7 +1810,7 @@ export async function buildTelemetryPayloadInternal(
     cacheStore,
   });
 
-  // 4. Identify the model pool bound to the active conversation family (consistent with quota-pools.mjs: classify Other third-party models into Claude & GPT)
+  // 4. Identify the model pool bound to the active conversation family (classify Other third-party models into Claude & GPT)
   const { activePoolKey, activeLive5h, activeLiveWeekly } = resolveActivePoolKeyFromStep(
     latestFamilyStep,
     quotaPoolsMap
@@ -1956,17 +1920,6 @@ export async function buildTelemetryPayloadInternal(
       recordRunningPool(sub.cascadeId);
     }
   }
-
-  updatePoolQuotaReservationEstimates({
-    endpointId,
-    accountScope: accountScope || '',
-    quotaPoolsMap,
-    poolCycleStats,
-    runningPoolKeys,
-    hasUnknownRunningPool,
-    quotaFetchedAtMs: officialQuotaInfo?.fetchedAtMs || 0,
-    nowMs: Date.now(),
-  });
 
   // 6. Assemble active quota pool and weekly limit view data
   const { activePoolQuota, weeklyQuota } = buildActivePoolAndWeeklyQuotas({
@@ -2328,29 +2281,8 @@ export async function buildTelemetryPayloadInternal(
     });
   }
 
-  const sortedQuotaPools = Array.from(quotaPoolsMap.values()).sort((a, b) => {
-    const order = { Gemini: 0, Argon: 1, Carbon: 2, 'Claude & GPT': 3 };
-    return (order[a.family] ?? 99) - (order[b.family] ?? 99);
-  });
-  if (
-    !isRemote &&
-    accountStatus === 'signedIn' &&
-    userStatus?.email &&
-    officialQuotaInfo?.data &&
-    !officialQuotaInfo.isStale
-  ) {
-    recordAccountQuotaSnapshot(
-      userStatus.email,
-      sortedQuotaPools,
-      officialQuotaInfo.fetchedAtMs || Date.now(),
-      { isActiveHost: true }
-    );
-  }
-  const weeklyCapacityEstimate = buildWeeklyCapacityEstimate({
-    sortedPools: sortedQuotaPools,
-    isCustomWeeklyMode,
-    hasOfficialData: Boolean(officialQuotaInfo?.data),
-  });
+  const sortedQuotaPools = [];
+  const weeklyCapacityEstimate = null;
 
   const finalPayload = {
     timestamp: new Date().toISOString(),
@@ -2454,24 +2386,23 @@ export async function buildTelemetryPayloadInternal(
     },
     quotas: {
       meta: {
-        fetchedAtMs: officialQuotaInfo?.fetchedAtMs || 0,
-        hasOfficialData: Boolean(officialQuotaInfo?.data),
-        isStale: Boolean(officialQuotaInfo?.isStale),
-        refreshFailed: Boolean(officialQuotaInfo?.refreshFailed),
-        error: officialQuotaInfo?.error || null,
-        errorMessage: officialQuotaInfo?.error || null,
+        fetchedAtMs: 0,
+        hasOfficialData: false,
+        isStale: false,
+        refreshFailed: false,
+        disabledReason: 'local_disk_only',
+        error: null,
+        errorMessage: null,
       },
       activePool: activePoolQuota,
-      pools: sortedQuotaPools,
+      pools: [],
       weekly: weeklyQuota,
-      weeklyCapacityEstimate,
+      weeklyCapacityEstimate: null,
     },
     modelBreakdown,
   };
 
-  const endpointSig = isRemote
-    ? `${Number(endpoint?.instanceId || 0)}|${String(endpoint?.baseUrl || '')}|${String(endpoint?.csrfToken || '')}`
-    : String(lsRuntimeEndpoint.addr || '');
+  const endpointSig = LOCAL_ENDPOINT_ID;
   const completedSnapshot = {
     endpointId,
     isRemote,
@@ -2525,14 +2456,6 @@ export async function buildTelemetryPayloadInternal(
     });
   }
 
-  if (!isRemote && lsRuntimeEndpoint.addr !== 'test.invalid') {
-    try {
-      /* read-only: skip CLI_STATUS_SNAPSHOT_FILE write */
-    } catch {
-      // Snapshot persistence is an auxiliary side-channel; never let errors block the main telemetry response
-    }
-  }
-
   return finalPayload;
 }
 
@@ -2541,9 +2464,7 @@ function resolveValidFastSnapshot(endpoint = null) {
   const endpointId = isRemote ? String(endpoint.id || 'remote') : LOCAL_ENDPOINT_ID;
   const snap = lastCompletedTelemetrySnapshotsByEndpoint.get(endpointId);
   if (!snap || !snap.basePayload || !snap.aggContext) return null;
-  const expectedSig = isRemote
-    ? `${Number(endpoint?.instanceId || 0)}|${String(endpoint?.baseUrl || '')}|${String(endpoint?.csrfToken || '')}`
-    : String(lsRuntimeEndpoint.addr || '');
+  const expectedSig = LOCAL_ENDPOINT_ID;
   if (snap.endpointSig !== expectedSig) return null;
   if (
     snap.catalogRevision !== pricingCatalogRevision ||

@@ -9,17 +9,17 @@ import {
 
 describe('read-only API allowlist', () => {
   it('allows only the declared read-only monitor routes', () => {
-    assert.equal(ALLOWED_API_ROUTES.length, 6);
+    assert.equal(ALLOWED_API_ROUTES.length, 5);
     assert.equal(isAllowedApiRoute('GET', '/api/telemetry'), true);
     assert.equal(isAllowedApiRoute('post', '/api/settings'), true);
     assert.equal(isAllowedApiRoute('POST', '/api/settings/reset'), true);
     assert.equal(isAllowedApiRoute('POST', '/api/cache/rebuild'), true);
     assert.equal(isAllowedApiRoute('POST', '/api/cloud-sync'), true);
-    assert.equal(isAllowedApiRoute('GET', '/api/quota-reservation/log'), true);
   });
 
   it('rejects host-invasive routes, wrong methods, and unknown paths', () => {
     const blocked = [
+      ['GET', '/api/quota-reservation/log'],
       ['GET', '/api/accounts'],
       ['POST', '/api/accounts/update'],
       ['POST', '/api/context-window'],

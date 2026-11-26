@@ -43,7 +43,6 @@ import {
     stepFilterAgent: 'all',
     selectedRange: 'all',
     payload: null,
-    reservationLog: null,
     loading: false,
     error: '',
     statusMessage: '',
@@ -926,14 +925,6 @@ import {
       ])
     );
 
-    const logBox = h('pre', {
-      className: 'log-pre',
-      id: 'reservation-log-pre',
-      textContent: state.reservationLog
-        ? JSON.stringify(state.reservationLog, null, 2)
-        : 'Click "Load Reservation Log" to inspect local quota lease estimates.',
-    });
-
     root.appendChild(
       h('div', { className: 'card' }, [
         h('div', { className: 'card-header' }, [
@@ -943,7 +934,7 @@ import {
           h('button', {
             type: 'button',
             className: 'btn',
-            textContent: 'Force Quota Refresh',
+            textContent: 'Refresh Local Data',
             onClick: () => fetchTelemetry({ force: true, userTriggered: true }),
           }),
           h('button', {
@@ -979,22 +970,7 @@ import {
               }
             },
           }),
-          h('button', {
-            type: 'button',
-            className: 'btn',
-            textContent: 'Load Reservation Log',
-            onClick: async () => {
-              try {
-                state.reservationLog = await apiFetch('./api/quota-reservation/log');
-                logBox.textContent = JSON.stringify(state.reservationLog, null, 2);
-              } catch (err) {
-                state.error = err?.message || 'Failed to load reservation log';
-                renderBanner();
-              }
-            },
-          }),
         ]),
-        logBox,
       ])
     );
     state.settingsRendered = true;

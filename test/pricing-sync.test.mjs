@@ -6,7 +6,8 @@ import { join } from 'node:path';
 const tempRoot = mkdtempSync(join(tmpdir(), 'ag-mon-pricing-'));
 process.env.USAGE_MONITOR_DATA_DIR = tempRoot;
 process.env.ANTIGRAVITY_GEMINI_DIR = join(tempRoot, 'gemini');
-process.env.ANTIGRAVITY_LS_ADDRESS = 'test.invalid';
+delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+delete process.env.USAGE_MONITOR_APP_DATA_DIR;
 
 const { after, describe, it } = await import('node:test');
 const { REMOTE_CATALOG_CACHE_FILE, cloudSyncState } = await import('../src/runtime/paths.mjs');

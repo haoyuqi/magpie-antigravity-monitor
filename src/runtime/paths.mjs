@@ -169,8 +169,6 @@ export function resolveDataPaths(explicitDataDir = '') {
     cacheFile: join(baseDir, 'trajectory_usage_cache.json'),
     trajectoryDbFile: join(baseDir, 'trajectory_store.sqlite'),
     remoteCatalogCacheFile: join(baseDir, 'remote_pricing_cache.json'),
-    quotaReservationStateFile: join(baseDir, 'quota_reservation_state.json'),
-    accountQuotaHistoryFile: join(baseDir, 'account_quota_history.json'),
   };
 }
 
@@ -180,17 +178,11 @@ export const SETTINGS_FILE = initialPaths.settingsFile;
 export const CACHE_FILE = initialPaths.cacheFile;
 export const TRAJECTORY_DB_FILE = initialPaths.trajectoryDbFile;
 export const REMOTE_CATALOG_CACHE_FILE = initialPaths.remoteCatalogCacheFile;
-export const QUOTA_RESERVATION_STATE_FILE = initialPaths.quotaReservationStateFile;
-export const ACCOUNT_QUOTA_HISTORY_FILE = initialPaths.accountQuotaHistoryFile;
 
 export const PRODUCT_DATA_ROOTS = resolveProductDataRoots();
 export const CONVERSATION_DIRS = PRODUCT_DATA_ROOTS.map((root) => join(root, 'conversations'));
 export const BRAIN_DIRS = PRODUCT_DATA_ROOTS.map((root) => join(root, 'brain'));
 export const ANNOTATION_DIRS = PRODUCT_DATA_ROOTS.map((root) => join(root, 'annotations'));
-export const DAEMON_DIRS = dedupeDirCandidates([
-  join(resolveGeminiBaseDir(), 'antigravity-cli', 'daemon'),
-  ...PRODUCT_DATA_ROOTS.map((root) => join(root, 'daemon')),
-]);
 export const CONVERSATIONS_DIR = CONVERSATION_DIRS[0];
 export const BRAIN_DIR = BRAIN_DIRS[0];
 export const DEEP_STATS_CACHE_CANDIDATES = dedupeDirCandidates([
@@ -200,62 +192,6 @@ export const DEEP_STATS_CACHE_CANDIDATES = dedupeDirCandidates([
   join(resolveGeminiBaseDir(), 'antigravity-idea', 'brain', '.deep_stats_cache.json'),
   ...BRAIN_DIRS.map((dir) => join(dir, '.deep_stats_cache.json')),
 ]);
-
-/**
- * Returns true only for strict loopback HTTP/HTTPS URLs with no embedded credentials.
- *
- * @param {string} rawUrl
- * @returns {boolean}
- */
-export function isStrictLoopbackUrl(rawUrl) {
-  try {
-    const parsed = new URL(String(rawUrl || ''));
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    if (parsed.username || parsed.password) return false;
-    const host = parsed.hostname.toLowerCase();
-    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
-  } catch {
-    return false;
-  }
-}
-
-function parseLoopbackLsAddress(rawInput) {
-  const raw = String(rawInput || '').trim();
-  if (!raw) {
-    return { addr: '', baseUrl: '' };
-  }
-  if (raw === 'test.invalid') {
-    return { addr: 'test.invalid', baseUrl: '' };
-  }
-  const proto = /^https:\/\//i.test(raw) ? 'https' : 'http';
-  const cleanAddr = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  const candidateUrl = cleanAddr ? `${proto}://${cleanAddr}` : '';
-  if (!candidateUrl || !isStrictLoopbackUrl(candidateUrl)) {
-    return { addr: '', baseUrl: '' };
-  }
-  return { addr: cleanAddr, baseUrl: candidateUrl };
-}
-
-const initialLs = parseLoopbackLsAddress(process.env.ANTIGRAVITY_LS_ADDRESS);
-export const LS_ADDR = initialLs.addr;
-export const LS_BASE_URL = initialLs.baseUrl;
-export const CSRF_TOKEN =
-  process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.ANTIGRAVITY_SERVER_CSRF_TOKEN;
-
-export const lsRuntimeEndpoint = {
-  addr: LS_ADDR,
-  baseUrl: LS_BASE_URL,
-  csrfToken: CSRF_TOKEN || '',
-  isDynamic: false,
-};
-
-export function setLsRuntimeEndpoint(nextAddr, nextCsrfToken, { isDynamic = true } = {}) {
-  const parsed = parseLoopbackLsAddress(nextAddr);
-  lsRuntimeEndpoint.addr = parsed.addr;
-  lsRuntimeEndpoint.baseUrl = parsed.baseUrl;
-  lsRuntimeEndpoint.csrfToken = parsed.baseUrl ? String(nextCsrfToken || '').trim() : '';
-  lsRuntimeEndpoint.isDynamic = Boolean(parsed.baseUrl && isDynamic);
-}
 
 export function loadJson(filePath, fallback) {
   if (!existsSync(filePath)) return fallback;
@@ -335,7 +271,7 @@ export const trajectoryCacheStore = createTrajectoryCacheStore({
   loadJsonFn: loadJson,
   writeCacheFn: saveJson,
   shouldBypassThrottleFn: (allowThrottleInTest) =>
-    !allowThrottleInTest && lsRuntimeEndpoint.addr === 'test.invalid',
+    !allowThrottleInTest && process.env.USAGE_MONITOR_DISABLE_THROTTLE === '1',
   registerExitHook: true,
 });
 
