@@ -231,6 +231,46 @@ describe('monitor HTTP server & security', () => {
       body: '{}',
     });
     assert.equal(rebuildRes.status, 200);
+
+    // Concurrent GET started before POST /api/settings must not be reused by GET after save
+    const preSaveGet = rawHttpRequest(srv.port, {
+      path: '/api/telemetry?range=all',
+      headers: { [TOKEN_HEADER]: srv.token },
+    });
+    const saveBudgetRes = await rawHttpRequest(srv.port, {
+      method: 'POST',
+      path: '/api/settings',
+      headers: {
+        [TOKEN_HEADER]: srv.token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        weeklyLimitMode: 'custom_tokens',
+        weeklyTokenBudget: 123456,
+      }),
+    });
+    assert.equal(saveBudgetRes.status, 200);
+    await preSaveGet;
+
+    const postSaveGet = await rawHttpRequest(srv.port, {
+      path: '/api/telemetry?range=all',
+      headers: { [TOKEN_HEADER]: srv.token },
+    });
+    assert.equal(postSaveGet.status, 200);
+    const postPayload = JSON.parse(postSaveGet.body);
+    assert.equal(postPayload.settings.weeklyLimitMode, 'custom_tokens');
+    assert.equal(postPayload.settings.weeklyTokenBudget, 123456);
+    assert.equal(postPayload.quotas.weekly.title, 'Weekly Limit (Custom Local)');
+
+    await rawHttpRequest(srv.port, {
+      method: 'POST',
+      path: '/api/settings/reset',
+      headers: {
+        [TOKEN_HEADER]: srv.token,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    });
   });
 
   it('handles OPTIONS preflight and serves static UI assets including view-model.mjs', async () => {

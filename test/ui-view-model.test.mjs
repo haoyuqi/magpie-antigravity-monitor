@@ -10,6 +10,7 @@ import {
   getAgentViews,
   normalizeQuotaPoolView,
   normalizeWeeklyQuotaView,
+  shouldAutoReloadOn401,
 } from '../src/ui/view-model.mjs';
 
 describe('UI telemetry view-model', () => {
@@ -199,6 +200,9 @@ describe('UI telemetry view-model', () => {
     assert.equal(summary.conversationsCount, 6);
     assert.equal(summary.costUsd, 1.45);
     assert.equal(summary.totalTokens, 12000);
+    assert.equal(summary.outputTokens, 2000);
+    assert.equal(summary.thinkingTokens, 500);
+    assert.equal(summary.responseTokens, 1500);
 
     const bars = extractTrendBars(consumption);
     assert.deepEqual(bars, [
@@ -214,5 +218,16 @@ describe('UI telemetry view-model', () => {
     assert.deepEqual(workspaces, [
       { label: 'magpie-antigravity-monitor', sessionCount: 4, totalTokens: 9000, costUsd: 1.1 },
     ]);
+  });
+
+  it('guards 401 auto-reload with a cooldown to recover once without reload loops', () => {
+    const first = shouldAutoReloadOn401('', 100000, 10000);
+    assert.equal(first.shouldReload, true);
+
+    const withinCooldown = shouldAutoReloadOn401(first.nextWindowName, 105000, 10000);
+    assert.equal(withinCooldown.shouldReload, false);
+
+    const afterCooldown = shouldAutoReloadOn401(first.nextWindowName, 115000, 10000);
+    assert.equal(afterCooldown.shouldReload, true);
   });
 });

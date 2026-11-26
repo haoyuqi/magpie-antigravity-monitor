@@ -71,7 +71,10 @@ let agentStepPrepCache = new WeakMap();
 const conversationAssemblyCache = new Map();
 const lastCompletedTelemetrySnapshotsByEndpoint = new Map();
 
+let telemetryMemoGeneration = 0;
+
 export function clearTelemetryBuilderMemo(endpointId = null) {
+  telemetryMemoGeneration += 1;
   if (endpointId) {
     const epKey = String(endpointId);
     lastCompletedTelemetrySnapshotsByEndpoint.delete(epKey);
@@ -81,12 +84,18 @@ export function clearTelemetryBuilderMemo(endpointId = null) {
         conversationAssemblyCache.delete(key);
       }
     }
+    for (const key of Array.from(inFlightRequests.keys())) {
+      if (key.startsWith(prefix)) {
+        inFlightRequests.delete(key);
+      }
+    }
     clearUsageAggregatorMemo(epKey);
     return;
   }
   agentStepPrepCache = new WeakMap();
   conversationAssemblyCache.clear();
   lastCompletedTelemetrySnapshotsByEndpoint.clear();
+  inFlightRequests.clear();
   clearUsageAggregatorMemo();
 }
 
@@ -1760,6 +1769,7 @@ export async function buildTelemetryPayloadInternal(
   forceQuotaRefresh = false,
   filterOpts = {}
 ) {
+  const buildGen = telemetryMemoGeneration;
   const endpoint = filterOpts?.endpoint && filterOpts.endpoint.isRemote ? filterOpts.endpoint : null;
   const isRemote = Boolean(endpoint);
   const endpointId = isRemote ? String(endpoint.id || 'remote') : LOCAL_ENDPOINT_ID;
@@ -2462,46 +2472,48 @@ export async function buildTelemetryPayloadInternal(
   const endpointSig = isRemote
     ? `${Number(endpoint?.instanceId || 0)}|${String(endpoint?.baseUrl || '')}|${String(endpoint?.csrfToken || '')}`
     : String(lsRuntimeEndpoint.addr || '');
-  lastCompletedTelemetrySnapshotsByEndpoint.delete(endpointId);
-  if (lastCompletedTelemetrySnapshotsByEndpoint.size >= MAX_TELEMETRY_SNAPSHOT_ENDPOINTS) {
-    const oldestKey = lastCompletedTelemetrySnapshotsByEndpoint.keys().next().value;
-    if (oldestKey !== undefined) {
-      lastCompletedTelemetrySnapshotsByEndpoint.delete(oldestKey);
+  if (buildGen === telemetryMemoGeneration) {
+    lastCompletedTelemetrySnapshotsByEndpoint.delete(endpointId);
+    if (lastCompletedTelemetrySnapshotsByEndpoint.size >= MAX_TELEMETRY_SNAPSHOT_ENDPOINTS) {
+      const oldestKey = lastCompletedTelemetrySnapshotsByEndpoint.keys().next().value;
+      if (oldestKey !== undefined) {
+        lastCompletedTelemetrySnapshotsByEndpoint.delete(oldestKey);
+      }
     }
+    lastCompletedTelemetrySnapshotsByEndpoint.set(endpointId, {
+      endpointId,
+      isRemote,
+      endpointSig,
+      weeklyLimitMode: settings.weeklyLimitMode,
+      weeklyTokenBudget: settings.weeklyTokenBudget,
+      weeklyCostBudget: settings.weeklyCostBudget,
+      catalogRevision: modelInputs.catalogRevision,
+      phaseEpoch: modelInputs.phaseEpoch,
+      basePayload: finalPayload,
+      sessions: {
+        conversations,
+      },
+      knownUpstreamByModelKey,
+      quotaContext: {
+        quotaPoolsMap,
+        isCustomWeeklyMode,
+        weekBucket,
+        quotaWeekBucket,
+        poolsWeeklySummary,
+      },
+      aggContext: {
+        cycleAnchors,
+        isCustomWeeklyMode,
+        currentAccountName: accountScope,
+        activeCascadeId,
+        activeFamilyCascadeIds,
+        resolveStepModel,
+        quotaPoolsMap,
+        modelInputs,
+        endpoint,
+      },
+    });
   }
-  lastCompletedTelemetrySnapshotsByEndpoint.set(endpointId, {
-    endpointId,
-    isRemote,
-    endpointSig,
-    weeklyLimitMode: settings.weeklyLimitMode,
-    weeklyTokenBudget: settings.weeklyTokenBudget,
-    weeklyCostBudget: settings.weeklyCostBudget,
-    catalogRevision: modelInputs.catalogRevision,
-    phaseEpoch: modelInputs.phaseEpoch,
-    basePayload: finalPayload,
-    sessions: {
-      conversations,
-    },
-    knownUpstreamByModelKey,
-    quotaContext: {
-      quotaPoolsMap,
-      isCustomWeeklyMode,
-      weekBucket,
-      quotaWeekBucket,
-      poolsWeeklySummary,
-    },
-    aggContext: {
-      cycleAnchors,
-      isCustomWeeklyMode,
-      currentAccountName: accountScope,
-      activeCascadeId,
-      activeFamilyCascadeIds,
-      resolveStepModel,
-      quotaPoolsMap,
-      modelInputs,
-      endpoint,
-    },
-  });
 
   if (!isRemote && lsRuntimeEndpoint.addr !== 'test.invalid') {
     try {
@@ -2997,7 +3009,7 @@ export function buildTelemetryPayload(
       if (presetsPayload) {
         return Promise.resolve(presetsPayload);
       }
-      const key = `${endpointKey}::${requestedConvId || '__auto__'}::presets-cold`;
+      const key = `${endpointKey}::gen${telemetryMemoGeneration}::${requestedConvId || '__auto__'}::presets-cold`;
       if (inFlightRequests.has(key)) {
         return inFlightRequests.get(key);
       }
@@ -3007,7 +3019,9 @@ export function buildTelemetryPayload(
       const p = buildTelemetryPayloadInternal(requestedConvId, false, coldFilterOpts)
         .then(() => tryBuildConsumptionPresetsPayload(filterOpts))
         .finally(() => {
-          inFlightRequests.delete(key);
+          if (inFlightRequests.get(key) === p) {
+            inFlightRequests.delete(key);
+          }
         });
       inFlightRequests.set(key, p);
       return p;
@@ -3020,13 +3034,15 @@ export function buildTelemetryPayload(
     }
   }
   const rangeSig = `${filterOpts.range || 'all'}:${filterOpts.pool || 'all'}:${filterOpts.startMs || 0}:${filterOpts.endMs || 0}`;
-  const key = `${endpointKey}::${requestedConvId || '__auto__'}::${forceQuotaRefresh ? 'force' : 'normal'}::${rangeSig}`;
+  const key = `${endpointKey}::gen${telemetryMemoGeneration}::${requestedConvId || '__auto__'}::${forceQuotaRefresh ? 'force' : 'normal'}::${rangeSig}`;
   if (inFlightRequests.has(key)) {
     return inFlightRequests.get(key);
   }
   const p = buildTelemetryPayloadInternal(requestedConvId, forceQuotaRefresh, filterOpts).finally(
     () => {
-      inFlightRequests.delete(key);
+      if (inFlightRequests.get(key) === p) {
+        inFlightRequests.delete(key);
+      }
     }
   );
   inFlightRequests.set(key, p);

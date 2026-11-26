@@ -8,6 +8,7 @@ import {
   getAgentViews,
   normalizeQuotaPoolView,
   normalizeWeeklyQuotaView,
+  shouldAutoReloadOn401,
 } from './view-model.mjs';
 
 (() => {
@@ -52,7 +53,9 @@ import {
     activeRequestKey: '',
     abortController: null,
     settingsDirty: false,
+    settingsEditVersion: 0,
     settingsRendered: false,
+    authExpired: false,
   };
 
   function h(tag, attrs = {}, children = []) {
@@ -144,9 +147,28 @@ import {
       json = { error: text || `HTTP ${res.status}` };
     }
     if (!res.ok) {
-      throw new Error(json.error || `Request failed (${res.status})`);
+      const err = new Error(json.error || `Request failed (${res.status})`);
+      err.status = res.status;
+      throw err;
     }
     return json;
+  }
+
+  function handleUnauthorized() {
+    if (state.pollTimer) {
+      clearTimeout(state.pollTimer);
+      state.pollTimer = null;
+    }
+    const check = shouldAutoReloadOn401(window.name, Date.now(), 10000);
+    if (check.shouldReload) {
+      window.name = check.nextWindowName;
+      window.location.reload();
+      return true;
+    }
+    state.authExpired = true;
+    state.error = 'Monitor service restarted with a new session token. Reload to reconnect.';
+    renderBanner();
+    return false;
   }
 
   function applySettingsAppearance(settings) {
@@ -194,6 +216,7 @@ import {
     )
       .then((payload) => {
         if (reqId !== state.requestSeq) return;
+        state.authExpired = false;
         state.payload = payload;
         state.error = '';
         if (!state.selectedConvId && payload?.activeConversation?.cascadeId) {
@@ -204,6 +227,10 @@ import {
       })
       .catch((err) => {
         if (reqId !== state.requestSeq || err?.name === 'AbortError') return;
+        if (err?.status === 401) {
+          handleUnauthorized();
+          return;
+        }
         state.error = err?.message || 'Failed to load telemetry';
         renderBanner();
       })
@@ -225,7 +252,7 @@ import {
       clearTimeout(state.pollTimer);
       state.pollTimer = null;
     }
-    if (document.hidden) return;
+    if (document.hidden || state.authExpired) return;
     const isRunning = Boolean(
       state.payload?.activeConversation?.isRunning ||
         (state.payload?.runningConversations || []).length > 0
@@ -288,7 +315,21 @@ import {
     const root = document.getElementById('banner-area');
     root.replaceChildren();
     if (state.error) {
-      root.appendChild(h('div', { className: 'banner banner-error', textContent: state.error }));
+      const banner = h('div', { className: 'banner banner-error' }, [
+        h('span', { textContent: state.error }),
+      ]);
+      if (state.authExpired) {
+        banner.appendChild(
+          h('button', {
+            type: 'button',
+            className: 'btn btn-sm',
+            style: 'margin-left:10px;',
+            textContent: 'Reload Page',
+            onClick: () => window.location.reload(),
+          })
+        );
+      }
+      root.appendChild(banner);
     } else if (state.statusMessage) {
       root.appendChild(h('div', { className: 'banner', textContent: state.statusMessage }));
     }
@@ -665,7 +706,7 @@ import {
         h('div', { className: 'grid-kpi', style: 'margin-bottom:0;' }, [
           kpiCard('Total Tokens', fmtTokens(acct.totalTokens), `${fmtInt(acct.calls)} calls`),
           kpiCard('Input + Cache', fmtTokens(acct.inputTokens + acct.cacheReadTokens), `Cache hit: ${fmtPct(acct.cacheHitPct)}`),
-          kpiCard('Output + Think', fmtTokens(acct.outputTokens + acct.thinkingTokens), `Output: ${fmtTokens(acct.outputTokens)}`),
+          kpiCard('Output Tokens', fmtTokens(acct.outputTokens), `Response: ${fmtTokens(acct.responseTokens)} · Think: ${fmtTokens(acct.thinkingTokens)}`),
           kpiCard('Estimated Cost', fmtUsd(acct.costUsd), `${fmtInt(acct.conversationsCount)} sessions`),
         ]),
       ])
@@ -791,6 +832,7 @@ import {
     ]);
 
     const markDirty = () => {
+      state.settingsEditVersion += 1;
       state.settingsDirty = true;
     };
     for (const inputEl of [modeSelect, tokenInput, costInput, accentSelect, scaleSelect]) {
@@ -803,6 +845,7 @@ import {
       className: 'btn btn-primary',
       textContent: 'Save Preferences',
       onClick: async () => {
+        const submittedVersion = state.settingsEditVersion;
         try {
           const res = await apiFetch('./api/settings', {
             method: 'POST',
@@ -814,14 +857,20 @@ import {
               fontScale: scaleSelect.value,
             }),
           });
-          state.settingsDirty = false;
           if (state.payload) state.payload.settings = res.settings;
           applySettingsAppearance(res.settings);
           state.statusMessage = 'Preferences saved.';
           renderBanner();
-          renderSettingsTab();
+          if (state.settingsEditVersion === submittedVersion) {
+            state.settingsDirty = false;
+            renderSettingsTab();
+          }
           fetchTelemetry({ userTriggered: true });
         } catch (err) {
+          if (err?.status === 401) {
+            handleUnauthorized();
+            return;
+          }
           state.error = err?.message || 'Failed to save preferences';
           renderBanner();
         }
@@ -847,16 +896,23 @@ import {
             className: 'btn',
             textContent: 'Reset Defaults',
             onClick: async () => {
+              const submittedVersion = state.settingsEditVersion;
               try {
                 const res = await apiFetch('./api/settings/reset', { method: 'POST', body: '{}' });
-                state.settingsDirty = false;
                 if (state.payload) state.payload.settings = res.settings;
                 applySettingsAppearance(res.settings);
                 state.statusMessage = 'Preferences reset to defaults.';
                 renderBanner();
-                renderSettingsTab();
+                if (state.settingsEditVersion === submittedVersion) {
+                  state.settingsDirty = false;
+                  renderSettingsTab();
+                }
                 fetchTelemetry({ userTriggered: true });
               } catch (err) {
+                if (err?.status === 401) {
+                  handleUnauthorized();
+                  return;
+                }
                 state.error = err?.message || 'Failed to reset preferences';
                 renderBanner();
               }
@@ -980,6 +1036,10 @@ import {
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => {
+      if (state.authExpired) {
+        window.location.reload();
+        return;
+      }
       fetchTelemetry({ force: true, userTriggered: true });
     });
 

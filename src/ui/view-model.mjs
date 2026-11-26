@@ -224,6 +224,10 @@ export function extractUsageSummaryView(consumption) {
   const cacheReadTokens = Number(acct.cacheReadTokens || 0) || 0;
   const outputTokens = Number(acct.outputTokens || 0) || 0;
   const thinkingTokens = Number(acct.thinkingTokens || 0) || 0;
+  const responseTokens =
+    acct.responseTokens !== undefined && acct.responseTokens !== null
+      ? Number(acct.responseTokens) || 0
+      : Math.max(0, outputTokens - thinkingTokens);
   return {
     totalTokens: Number(acct.totalTokens || 0) || 0,
     calls: Number(acct.calls ?? acct.stepCount ?? 0) || 0,
@@ -232,6 +236,7 @@ export function extractUsageSummaryView(consumption) {
     cacheReadTokens,
     outputTokens,
     thinkingTokens,
+    responseTokens,
     costUsd: Number(acct.costUsd ?? acct.totalCostUsd ?? 0) || 0,
     cacheHitPct: Number(acct.cacheHitPct || 0) || 0,
   };
@@ -280,4 +285,29 @@ export function extractWorkspaceRows(consumption) {
     totalTokens: Number(w.totalTokens || 0) || 0,
     costUsd: Number(w.costUsd ?? w.totalCostUsd ?? 0) || 0,
   }));
+}
+
+const AUTH_RELOAD_PREFIX = 'ag_mon_auth_reload:';
+
+/**
+ * Decides whether a 401 response after a rolling server restart should trigger a one-shot
+ * page reload (to fetch the new per-process token from `GET /`), with a cooldown guard.
+ *
+ * @param {string} windowName
+ * @param {number} [nowMs=Date.now()]
+ * @param {number} [cooldownMs=10000]
+ * @returns {{ shouldReload: boolean, nextWindowName: string }}
+ */
+export function shouldAutoReloadOn401(windowName, nowMs = Date.now(), cooldownMs = 10000) {
+  const raw = String(windowName || '');
+  const prevMs = raw.startsWith(AUTH_RELOAD_PREFIX)
+    ? Number(raw.slice(AUTH_RELOAD_PREFIX.length))
+    : 0;
+  if (Number.isFinite(prevMs) && prevMs > 0 && nowMs - prevMs <= cooldownMs) {
+    return { shouldReload: false, nextWindowName: raw };
+  }
+  return {
+    shouldReload: true,
+    nextWindowName: `${AUTH_RELOAD_PREFIX}${nowMs}`,
+  };
 }
