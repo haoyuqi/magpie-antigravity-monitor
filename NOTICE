@@ -1,0 +1,24 @@
+magpie-antigravity-monitor
+Copyright (C) 2026 haoyuqi and contributors
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+--------------------------------------------------------------------------------
+Attribution & Third-Party Notices
+--------------------------------------------------------------------------------
+
+1. Core Telemetry, Data Parsers, and Panel UI
+   Ported from / Based on:
+     yuhuan-dev/antigravity-usage-monitor
+     https://github.com/yuhuan-dev/antigravity-usage-monitor
+     Copyright (C) 2026 yuhuan-dev
+     License: GNU General Public License v3.0 (GPL-3.0)
+
+2. Magpie Plugin Architecture & Page-Service Conventions
+   Design, bridge contracts, and host service lifecycle patterns informed by:
+     - yetone/magpie (https://github.com/yetone/magpie, MIT License)
+     - magpie-community/plugins (https://github.com/magpie-community/plugins, MIT License)
+       specifically the `page-chat` and `amp-usage` page-service plugins.
