@@ -10,13 +10,13 @@
 
 import {
   closeSync,
-  copyFileSync,
-  existsSync,
+  fstatSync,
   mkdtempSync,
   openSync,
   readSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -241,21 +241,87 @@ function toImmutableSqliteUri(dbPath) {
   return url.href;
 }
 
+const MAX_WAL_SNAPSHOT_ATTEMPTS = 3;
+
+function readFileSnapshot(filePath, { optional = false } = {}) {
+  let fd = -1;
+  try {
+    fd = openSync(filePath, 'r');
+    let st;
+    try {
+      st = fstatSync(fd, { bigint: true });
+    } catch {
+      st = fstatSync(fd);
+    }
+    const expectedSize = Number(st.size || 0);
+    const chunks = [];
+    let offset = 0;
+    const chunkSize = Math.max(4096, Math.min(expectedSize || 4096, 1024 * 1024));
+    const buf = Buffer.allocUnsafe(chunkSize);
+    while (true) {
+      const bytesRead = readSync(fd, buf, 0, buf.length, offset);
+      if (bytesRead <= 0) break;
+      chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
+      offset += bytesRead;
+    }
+    const content = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+    return {
+      exists: true,
+      ino: String(st.ino ?? 0),
+      size: content.length,
+      mtimeKey: String(st.mtimeNs ?? st.mtimeMs ?? 0),
+      content,
+    };
+  } catch (err) {
+    if (optional && err?.code === 'ENOENT') {
+      return { exists: false, ino: '0', size: 0, mtimeKey: '0', content: null };
+    }
+    throw err;
+  } finally {
+    if (fd >= 0) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close errors
+      }
+    }
+  }
+}
+
+function snapshotsMatch(a, b) {
+  if (!a || !b || a.exists !== b.exists) return false;
+  if (!a.exists) return true;
+  return (
+    String(a.ino) === String(b.ino) &&
+    a.size === b.size &&
+    a.mtimeKey === b.mtimeKey &&
+    a.content.equals(b.content)
+  );
+}
+
 /**
  * 以只读模式打开 SQLite 数据库执行查询并在 `finally` 中立即关闭连接，避免长连接阻塞宿主 WAL checkpoint。
- * 打开前先执行无锁头部就绪校验；遇到瞬时锁竞争（`SQLITE_BUSY`）时自动重试 1 次。
+ * 打开前先执行无锁头部就绪校验；存在活跃 WAL 时采用双栅栏一致性快照并在瞬时变化/锁竞争时有限重试，无法确认一致性则跳过本轮读取。
  *
  * @template T
  * @param {string} dbPath
  * @param {(db: any) => T} queryFn
+ * @param {{ maxSnapshotAttempts?: number, _onAfterDbSnapshot?: (attempt: number) => void }} [options={}]
  * @returns {T | null}
  */
-export function withReadOnlySqliteDb(dbPath, queryFn) {
+export function withReadOnlySqliteDb(dbPath, queryFn, options = {}) {
   const DatabaseSync = getNodeSqliteDatabaseSync();
   if (!DatabaseSync) return null;
   if (!isSqliteDbReadyForRead(dbPath)) return null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const maxSnapshotAttempts = Math.max(
+    1,
+    Number(options?.maxSnapshotAttempts) || MAX_WAL_SNAPSHOT_ATTEMPTS
+  );
+  const onAfterDbSnapshot =
+    typeof options?._onAfterDbSnapshot === 'function' ? options._onAfterDbSnapshot : null;
+
+  for (let attempt = 0; attempt < maxSnapshotAttempts; attempt++) {
     let db = null;
     let tempWalDir = '';
     try {
@@ -270,26 +336,27 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
       if (!hasNonEmptyWal) {
         db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
       } else {
-        // Non-empty -wal: snapshot .db and -wal into a temp dir so SQLite never
-        // opens the host DB in-place or creates -wal/-shm in the source directory.
+        // Non-empty -wal: read a double-fenced snapshot of .db and -wal into memory,
+        // verify neither changed across the pair of reads, then replay in a temp dir.
+        const dbSnap1 = readFileSnapshot(dbPath);
+        if (onAfterDbSnapshot) {
+          onAfterDbSnapshot(attempt);
+        }
+        const walSnap1 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
+        const dbSnap2 = readFileSnapshot(dbPath);
+        const walSnap2 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
+        if (!snapshotsMatch(dbSnap1, dbSnap2) || !snapshotsMatch(walSnap1, walSnap2)) {
+          continue;
+        }
+
         tempWalDir = mkdtempSync(join(tmpdir(), 'ag-mon-wal-'));
         const tempDbPath = join(tempWalDir, basename(dbPath));
-        copyFileSync(dbPath, tempDbPath);
-        let copiedWalNonEmpty = false;
-        try {
-          copyFileSync(`${dbPath}-wal`, `${tempDbPath}-wal`);
-          const copiedWalStat = statSync(`${tempDbPath}-wal`, { throwIfNoEntry: false });
-          copiedWalNonEmpty = Boolean(copiedWalStat && Number(copiedWalStat.size || 0) > 0);
-        } catch (copyErr) {
-          if (copyErr?.code !== 'ENOENT') {
-            throw copyErr;
-          }
-          copiedWalNonEmpty = false;
-        }
-        if (copiedWalNonEmpty) {
+        writeFileSync(tempDbPath, dbSnap1.content);
+        if (walSnap1.exists && walSnap1.content.length > 0) {
+          writeFileSync(`${tempDbPath}-wal`, walSnap1.content);
           db = new DatabaseSync(tempDbPath, { readOnly: true });
         } else {
-          db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
+          db = new DatabaseSync(toImmutableSqliteUri(tempDbPath), { readOnly: true });
         }
       }
       try {
@@ -299,7 +366,10 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
       }
       return queryFn(db);
     } catch (err) {
-      if (attempt === 0 && (isSqliteBusyError(err) || (tempWalDir && isSqliteTransientSnapshotError(err)))) {
+      if (
+        attempt + 1 < maxSnapshotAttempts &&
+        (isSqliteBusyError(err) || (tempWalDir && isSqliteTransientSnapshotError(err)))
+      ) {
         continue;
       }
       throw err;

@@ -20,6 +20,18 @@ const lsDiscoveryState = {
   lastAttemptMs: 0,
 };
 
+let lsDiscoveryOverride = null;
+
+/**
+ * Sets or clears discovery overrides (e.g. `daemonDirs`, `execCmdFn`, `isPidAliveFn`)
+ * so tests can isolate `ensureLsEndpointDiscovered()` from host directories and processes.
+ *
+ * @param {object|null} override
+ */
+export function setLsDiscoveryOverride(override) {
+  lsDiscoveryOverride = override && typeof override === 'object' ? { ...override } : null;
+}
+
 function defaultIsLsPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return true;
   if (typeof process?.kill !== 'function') return true;
@@ -539,6 +551,7 @@ export async function ensureLsEndpointDiscovered({
   lsDiscoveryState.inFlight = (async () => {
     try {
       const found = await discoverAntigravityLsEndpoint({
+        ...(lsDiscoveryOverride || {}),
         ancestorPids: [...envHintPids, ...ancestorPids],
       });
       if (found && found.addr && found.csrfToken) {

@@ -34,6 +34,7 @@ const {
   discoverAntigravityLsEndpoint,
   parseLsArgsFromCommandLine,
   parseLinuxProcNetTcpPorts,
+  setLsDiscoveryOverride,
 } = await import('../src/telemetry/ls-discovery.mjs');
 const { MODEL_PRICING } = await import('../src/telemetry/pricing-catalog.mjs');
 const { resolvePricingAt } = await import('../src/telemetry/model-pricing.mjs');
@@ -116,14 +117,24 @@ describe('read-only telemetry kernel', () => {
     mkdirSync(daemonDir, { recursive: true });
     writeFileSync(
       join(daemonDir, 'hub_12345.json'),
-      JSON.stringify({ pid: 12345, httpPort: 41234, csrfToken: 'tok-probe' }),
+      JSON.stringify({ pid: 12345, httpPort: 41235, csrfToken: 'tok-probe' }),
       'utf8'
     );
 
+    let execCalls = 0;
     try {
-      const rpcRedirects = [];
-      globalThis.fetch = async (_url, init = {}) => {
-        rpcRedirects.push(init.redirect);
+      setLsDiscoveryOverride({
+        daemonDirs: [daemonDir],
+        isPidAliveFn: () => true,
+        execCmdFn: async () => {
+          execCalls += 1;
+          return '';
+        },
+      });
+
+      const rpcFetchCalls = [];
+      globalThis.fetch = async (url, init = {}) => {
+        rpcFetchCalls.push({ url: String(url), redirect: init.redirect });
         if (init.redirect === 'error') {
           throw new TypeError('redirect blocked');
         }
@@ -134,7 +145,22 @@ describe('read-only telemetry kernel', () => {
       lsRuntimeEndpoint.baseUrl = 'http://127.0.0.1:41234';
       lsRuntimeEndpoint.csrfToken = 'tok-rpc';
       await assert.rejects(() => callLsRpc('GetUserStatus'), /redirect blocked/);
-      assert.deepEqual(rpcRedirects, ['error']);
+
+      assert.ok(rpcFetchCalls.length >= 1);
+      assert.equal(
+        rpcFetchCalls[0].url,
+        'http://127.0.0.1:41234/exa.language_server_pb.LanguageServerService/GetUserStatus'
+      );
+      for (const call of rpcFetchCalls) {
+        assert.equal(call.redirect, 'error');
+        assert.ok(
+          call.url.startsWith('http://127.0.0.1:41234/') ||
+            call.url.startsWith('http://127.0.0.1:41235/') ||
+            call.url.startsWith('https://127.0.0.1:41235/'),
+          `Unexpected rediscovery target: ${call.url}`
+        );
+      }
+      assert.equal(execCalls, 1);
 
       const probeRedirects = [];
       const endpoint = await discoverAntigravityLsEndpoint({
@@ -147,9 +173,10 @@ describe('read-only telemetry kernel', () => {
         },
       });
       assert.ok(endpoint);
-      assert.equal(endpoint.baseUrl, 'http://127.0.0.1:41234');
+      assert.equal(endpoint.baseUrl, 'http://127.0.0.1:41235');
       assert.deepEqual(probeRedirects, ['error']);
     } finally {
+      setLsDiscoveryOverride(null);
       globalThis.fetch = prevFetch;
       lsRuntimeEndpoint.addr = prevAddr;
       lsRuntimeEndpoint.baseUrl = prevBaseUrl;
