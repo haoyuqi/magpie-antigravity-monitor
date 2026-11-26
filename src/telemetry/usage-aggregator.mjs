@@ -1,10 +1,10 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 多时间窗口解析、用量桶累加、趋势序列、月度序列与分模型/分来源聚合引擎。
+ * @fileoverview Multi-window time parsing, usage bucket accumulation, trend series, monthly series, and per-model/per-source aggregation engine.
  *
- * 负责将内存缓存 (`trajectoryCache`) 与外部深层统计缓存 (`loadExternalDeepStatsCache`)
- * 中的所有步骤按预设窗口（`all`, `cycle`, `5h`, `today`, `24h`, `week`, `7d`, `14d`, `30d`）与当前选定窗口
- * 进行去重遍历聚合，输出前端消费分析与模型明细所需的完整统计结构。
+ * Deduplicates and aggregates all steps from the in-memory cache (`trajectoryCache`) and external deep stats cache
+ * (`loadExternalDeepStatsCache`) across preset windows (`all`, `cycle`, `5h`, `today`, `24h`, `week`, `7d`, `14d`, `30d`)
+ * and the currently selected window, producing the complete statistics structure for frontend consumption analytics and model breakdowns.
  */
 
 import { isDeepStrictEqual } from 'node:util';
@@ -37,13 +37,15 @@ function normalizeOwnerAccount(val) {
   return typeof val === 'string' ? val.trim().toLowerCase() : '';
 }
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WEEKDAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const COMPACTION_QUOTA_SETTLE_MAX_MS = 180_000;
 const STEP_QUOTA_DURATION_CAP_SEC = 600;
 
 /**
- * 解析单步用于官方配额周期窗口（`5h` / `weekly` / `cycle`）边界比对的结算时间戳：
- * 服务端配额桶的 `resetTime` 锚定在周期内首笔请求完成扣费时刻（而非 `createdAt` 发起时刻），
- * 使用完成时刻（无流式计时的自动压缩 `CHECKPOINT` 步按合理结算上限及下一步发起时刻封顶）避免漏计开启新周期的首步。
+ * Resolve the billing settlement timestamp for a single step when comparing against official quota cycle windows (`5h` / `weekly` / `cycle`):
+ * The server-side quota bucket `resetTime` is anchored at the completion/billing time of the first request in the cycle (rather than its `createdAt` start time),
+ * so using completion time (with auto-compaction `CHECKPOINT` steps lacking streaming timing capped by a reasonable settle limit and the next step's start time) avoids missing the first step that opens a new cycle.
  */
 function resolveStepQuotaBillingMs(st, nextStep, nowMs) {
   const tMs = Number(st?.createdAtMs) > 0 ? Number(st.createdAtMs) : 0;
@@ -61,7 +63,7 @@ function resolveStepQuotaBillingMs(st, nextStep, nowMs) {
 }
 
 /**
- * 获取本地当日 00:00:00.000 的毫秒时间戳。
+ * Get the millisecond timestamp of local 00:00:00.000 for today.
  *
  * @param {Date|number} [now=new Date()]
  * @returns {number}
@@ -80,7 +82,7 @@ function getStartOfLocalOffsetDaysMs(nowMs, offsetDays) {
 }
 
 /**
- * 获取本地下一个周一 00:00:00.000 的 ISO 时间字符串（用于自定义本机周限额重置倒计时）。
+ * Get the ISO timestamp string for next local Monday 00:00:00.000 (used for custom local weekly quota reset countdown).
  *
  * @param {Date|number} [now=new Date()]
  * @returns {string}
@@ -95,7 +97,7 @@ export function getNextMondayResetIso(now = new Date()) {
 }
 
 /**
- * 获取本地本周一 00:00:00.000 的毫秒时间戳。
+ * Get the millisecond timestamp of this local Monday 00:00:00.000.
  *
  * @param {Date|number} [now=new Date()]
  * @returns {number}
@@ -110,7 +112,7 @@ function getStartOfCurrentWeekMs(now = new Date()) {
 }
 
 /**
- * 根据时间范围键名 (`rangeKey`) 与官方配额重置锚点 (`cycleAnchors`) 解析起止毫秒时间戳。
+ * Resolve start and end millisecond timestamps from a time range key (`rangeKey`) and official quota reset anchors (`cycleAnchors`).
  *
  * @param {string} [rangeKey='all']
  * @param {number} [customStartMs=0]
@@ -137,7 +139,7 @@ function resolveTimeWindow(
           : getStartOfCurrentWeekMs(now);
       return {
         key: 'cycle',
-        label: isCustomWeeklyMode ? '本周' : '当前周期',
+        label: isCustomWeeklyMode ? 'This Week' : 'Current Cycle',
         startMs: startCycleMs,
         endMs: nowMs,
       };
@@ -150,15 +152,15 @@ function resolveTimeWindow(
           : nowMs - 5 * 3600 * 1000;
       return {
         key: '5h',
-        label: reset5hMs > nowMs ? '当前 5h 周期' : '近 5 小时',
+        label: reset5hMs > nowMs ? 'Current 5h Cycle' : 'Last 5h',
         startMs: start5hMs,
         endMs: nowMs,
       };
     }
     case 'today':
-      return { key: 'today', label: '今日', startMs: getStartOfLocalDayMs(now), endMs: nowMs };
+      return { key: 'today', label: 'Today', startMs: getStartOfLocalDayMs(now), endMs: nowMs };
     case '24h':
-      return { key: '24h', label: '近 24 小时', startMs: nowMs - 24 * 3600 * 1000, endMs: nowMs };
+      return { key: '24h', label: 'Last 24h', startMs: nowMs - 24 * 3600 * 1000, endMs: nowMs };
     case 'week': {
       const resetWkMs = cycleAnchors.weeklyResetMs || 0;
       const startWkMs =
@@ -167,7 +169,7 @@ function resolveTimeWindow(
           : getStartOfCurrentWeekMs(now);
       return {
         key: 'week',
-        label: resetWkMs > nowMs ? '当前周限周期' : '本周',
+        label: resetWkMs > nowMs ? 'Current Weekly Cycle' : 'This Week',
         startMs: startWkMs,
         endMs: nowMs,
       };
@@ -175,21 +177,21 @@ function resolveTimeWindow(
     case '7d':
       return {
         key: '7d',
-        label: '近 7 天',
+        label: 'Last 7d',
         startMs: getStartOfLocalOffsetDaysMs(nowMs, 7),
         endMs: nowMs,
       };
     case '14d':
       return {
         key: '14d',
-        label: '近 14 天',
+        label: 'Last 14d',
         startMs: getStartOfLocalOffsetDaysMs(nowMs, 14),
         endMs: nowMs,
       };
     case '30d':
       return {
         key: '30d',
-        label: '近 30 天',
+        label: 'Last 30d',
         startMs: getStartOfLocalOffsetDaysMs(nowMs, 30),
         endMs: nowMs,
       };
@@ -198,14 +200,14 @@ function resolveTimeWindow(
       const e = Number(customEndMs) > 0 ? Number(customEndMs) : nowMs;
       return {
         key: 'custom',
-        label: '自定义时段',
+        label: 'Custom Range',
         startMs: Math.min(s, e),
         endMs: Math.max(s, e),
       };
     }
     case 'all':
     default:
-      return { key: 'all', label: '全部时间', startMs: 0, endMs: Infinity };
+      return { key: 'all', label: 'All Time', startMs: 0, endMs: Infinity };
   }
 }
 
@@ -224,7 +226,7 @@ function resolveCachedLocalTimeZone() {
 }
 
 /**
- * 创建一个空的用量统计累加桶。
+ * Create an empty usage statistics accumulator bucket.
  */
 function createUsageBucket() {
   return {
@@ -242,11 +244,11 @@ function createUsageBucket() {
 }
 
 /**
- * 将单个模型步骤的 Token 与成本累加至目标统计桶。
+ * Accumulate tokens and cost for a single model step into the target statistics bucket.
  *
  * @param {ReturnType<typeof createUsageBucket>} bucket
- * @param {object} usage 已归一化的单步用量
- * @param {string} cascadeId 会话标识
+ * @param {object} usage Normalized single-step usage
+ * @param {string} cascadeId Conversation identifier
  */
 function accumulateStepIntoBucket(bucket, usage, cascadeId) {
   const { inTok, cacheTok, outTok, thinkTok, respTok, stepTotalTokens,
@@ -265,7 +267,7 @@ function accumulateStepIntoBucket(bucket, usage, cascadeId) {
 }
 
 /**
- * 将累加完成的用量桶定型为可序列化的前端统计结构（计算缓存命中率并舍入金额）。
+ * Finalize an accumulated usage bucket into a serializable frontend statistics structure (computing cache hit rate and rounding costs).
  *
  * @param {ReturnType<typeof createUsageBucket>} bucket
  */
@@ -290,7 +292,7 @@ function finalizeUsageBucket(bucket) {
 }
 
 /**
- * 将单步统计数据累加至按模型分组的映射表中（供单代理、主+子汇总与全局时间范围共用）。
+ * Accumulate single-step statistics into a per-model map (shared across single-agent, root+subagent totals, and global time ranges).
  *
  * @param {Map<string, object>} perModelStats
  * @param {object} st
@@ -395,7 +397,7 @@ function accumulateStepIntoModelMap(perModelStats, st, mInfo, stepCost) {
 }
 
 /**
- * 将按模型分组的统计映射表定型并排序为前端可渲染数组。
+ * Finalize and sort the per-model statistics map into a frontend-renderable array.
  *
  * @param {Map<string, object>} perModelStats
  * @returns {object[]}
@@ -454,7 +456,7 @@ function finalizeModelBreakdownMap(perModelStats) {
 }
 
 /**
- * 针对给定步骤数组构建按模型聚合的统计列表（供单代理、主+子汇总及全局时间范围复用）。
+ * Build a per-model aggregated statistics list for a given array of steps (reused by single-agent, root+subagent totals, and global time ranges).
  *
  * @param {object[]} [steps=[]]
  * @param {StepModelResolver} resolveStepModel
@@ -518,7 +520,7 @@ function collectUsageEntriesToAggregate(familySet, endpoint = null) {
   const cacheStore = getEndpointCacheStore(endpoint);
   const externalConvos = isRemote ? new Map() : loadExternalDeepStatsCache();
 
-  // 构建大小写归一化的内存缓存与跨端深层缓存索引，彻底杜绝 `${appSource}:${cascadeId}` 键不匹配导致的双倍重复计费
+  // Build case-normalized indexes for in-memory and cross-client deep caches to completely prevent double-billing caused by `${appSource}:${cascadeId}` key mismatches
   const allLiveByLower = new Map();
   for (const [rawId, entry] of cacheStore.listCachedTrajectoryEntries()) {
     const cidLower = String(rawId || '').toLowerCase();
@@ -591,7 +593,7 @@ const MAX_TOP_WORKSPACES_LIMIT = 12;
 const UNBOUND_WORKSPACE_KEY = '__unbound__';
 
 /**
- * 将 `file://` URI 或本地文件系统路径归一化为稳定的工作区聚合键、项目短名及可读路径。
+ * Normalize a `file://` URI or local filesystem path into a stable workspace aggregation key, short project name, and readable path.
  *
  * @param {string} rawUri
  * @returns {{ workspaceKey: string, label: string, workspacePath: string }|null}
@@ -898,7 +900,7 @@ function resolveEffectiveSelectedCycleWindow({
       pool: effectiveCyclePool,
       poolLabel,
       isFallbackWeek,
-      label: `${isCustomWeeklyMode || isFallbackWeek ? '本周' : '当前周期'} · ${poolLabel}`,
+      label: `${isCustomWeeklyMode || isFallbackWeek ? 'This Week' : 'Current Cycle'} · ${poolLabel}`,
       startMs,
     };
   }
@@ -921,7 +923,7 @@ function resolveEffectiveSelectedCycleWindow({
     pool: 'all',
     poolLabel: '',
     isFallbackWeek,
-    label: isCustomWeeklyMode || isFallbackWeek ? '本周' : '当前周期',
+    label: isCustomWeeklyMode || isFallbackWeek ? 'This Week' : 'Current Cycle',
     startMs,
   };
 }
@@ -942,7 +944,6 @@ function buildUsageTrendSeries(
   );
   const { start: trendStartMs, end: trendEndMs, hourly: useHourly, stepMs: plannedStepMs } = trend;
   const pad2 = (n) => String(n).padStart(2, '0');
-  const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
   const trendSeries = [];
   if (useHourly) {
@@ -970,7 +971,7 @@ function buildUsageTrendSeries(
       const endHh = `${pad2(ed.getHours())}:${pad2(ed.getMinutes())}`;
       const dateStr = `${sd.getMonth() + 1}/${pad2(sd.getDate())}`;
       const axisLabel = isSameDay ? hh : `${dateStr} ${hh}`;
-      const fullLabel = `${sd.getMonth() + 1}月${sd.getDate()}日 ${hh} - ${endHh}`;
+      const fullLabel = `${MONTH_NAMES[sd.getMonth()]} ${sd.getDate()} ${hh} - ${endHh}`;
       trendSeries.push({
         index: idx,
         startMs: sMs,
@@ -1022,8 +1023,7 @@ function buildUsageTrendSeries(
 
       const sd = new Date(sMs);
       const axisLabel = `${sd.getMonth() + 1}/${pad2(sd.getDate())}`;
-      const datePrefix = showFullYear ? `${sd.getFullYear()}年` : '';
-      const fullLabel = `${datePrefix}${sd.getMonth() + 1}月${sd.getDate()}日 (${WEEKDAY_NAMES[sd.getDay()]})`;
+      const fullLabel = `${showFullYear ? `${sd.getFullYear()}-` : ''}${MONTH_NAMES[sd.getMonth()]} ${sd.getDate()} (${WEEKDAY_NAMES[sd.getDay()]})`;
 
       trendSeries.push({
         index: i,
@@ -1057,7 +1057,7 @@ function buildUsageTrendSeries(
       } else if (item.tMs >= previousBucket.startMs && item.tMs < previousBucket.endMs) {
         targetIdx = previousBucketIndex;
       } else {
-        // 二分查找匹配的时间桶 [startMs, endMs)
+        // Binary search for matching time bucket [startMs, endMs)
         let lo = 0;
         let hi = lastIdx;
         while (lo <= hi) {
@@ -1438,7 +1438,7 @@ function sameUsageWindows(previous, current, dates, quotaDates = dates) {
 }
 
 /**
- * 聚合所有预设时间窗口、当前选定窗口、趋势图、年度月序列、来源占比与分模型统计。
+ * Aggregate all preset time windows, the currently selected window, trend chart, annual monthly series, source breakdown, and per-model statistics.
  *
  * @param {{
  *   filterOpts?: { range?: string, startMs?: number, endMs?: number },
@@ -1492,7 +1492,7 @@ export function aggregateMultiWindowUsage({
     sessionBuckets[k] = createUsageBucket();
   }
 
-  // 为每个配额池建立独立的 5h 及周限周期统计桶（按各池自身的 resetTime / weeklyResetTime 截取窗口）
+  // Create independent 5h and weekly cycle buckets for each quota pool (sliced by each pool's own resetTime / weeklyResetTime)
   const poolCycleBuckets = buildQuotaPoolCycleMap(quotaPoolsMap, nowMs);
   const effectiveCyclePool =
     selectedWindow.key === 'cycle'
@@ -1532,7 +1532,7 @@ export function aggregateMultiWindowUsage({
   const nextYearStartMs = monthBoundsMs[12];
   const monthlySeries = Array.from({ length: 12 }, (_, idx) => ({
     month: idx + 1,
-    label: `${idx + 1}月`,
+    label: MONTH_NAMES[idx],
     calls: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
@@ -1564,7 +1564,7 @@ export function aggregateMultiWindowUsage({
     sameUsageEntries(snapshot.entries, allEntriesToAggregate);
   const previous = sameSnapshot ? snapshot.ranges.get(selectedRangeCacheKey) : null;
   if (previous) {
-    // 时钟继续前进，只有实际有步骤跨过窗口边界时才重新聚合。
+    // As the clock advances, re-aggregate only when a step actually crosses a window boundary.
     const probeEffectiveWin =
       selectedWindow.key === 'cycle'
         ? resolveEffectiveSelectedCycleWindow({
@@ -1901,7 +1901,7 @@ export function aggregateMultiWindowUsage({
     })
   );
 
-  // 构建当前选定时间窗口的自适应自然整点/整日趋势序列 (trendSeries)
+  // Build adaptive natural hourly/daily trend series (trendSeries) for the currently selected time window
   const effectiveSelectedWindow = resolveEffectiveSelectedCycleWindow({
     selectedWindow,
     effectiveCyclePool,
@@ -2095,17 +2095,17 @@ export function aggregateMultiWindowUsage({
       earliest: earliestSelectedStepMs,
       latest: latestSelectedStepMs,
     });
-    // 缓存各时间窗口的完整多窗口聚合结果，同快照复用时亚毫秒命中。
+    // Cache full multi-window aggregation results per time window for sub-millisecond hits when reusing the same snapshot.
     if (ranges.size > 16) ranges.delete(ranges.keys().next().value);
   }
   return result;
 }
 
 /**
- * 轻量级单时间窗口剪枝聚合器（专为 `scope=consumption` / `scope=consumption-presets` 瞬切服务）：
- * 1. 跳过 12 个月年度柱、9 预设桶与配额池 5h/周统计；
- * 2. 基于会话级 `[minMs, maxMs]` 边界直接跳过时间完全不重叠的历史会话；
- * 3. 与 `aggregateMultiWindowUsage` 共用完全一致的周期锚点、来源/模型归并及趋势分桶逻辑。
+ * Lightweight single-window pruned aggregator (dedicated to instant switching for `scope=consumption` / `scope=consumption-presets`):
+ * 1. Skips the 12-month annual bars, 9 preset buckets, and quota pool 5h/weekly stats;
+ * 2. Directly skips historical conversations whose `[minMs, maxMs]` bounds do not overlap the target window;
+ * 3. Shares the exact same cycle anchors, source/model merging, and trend bucketing logic with `aggregateMultiWindowUsage`.
  */
 export function aggregateSelectedWindowUsage({
   filterOpts = {},
@@ -2572,8 +2572,8 @@ export function aggregateSelectedWindowUsage({
 }
 
 /**
- * 轻量级单会话家族用量汇总（专为 `scope=conversation` 瞬切服务）：
- * 仅遍历当前选中根会话及其子代理步骤，不触碰其余历史会话与全局账户聚合缓存。
+ * Lightweight single-conversation family usage summary (dedicated to instant switching for `scope=conversation`):
+ * Traverses only the currently selected root conversation and its subagent steps without touching other historical conversations or the global account aggregation cache.
  */
 export function aggregateSessionUsageForFamily({
   filterOpts = {},
@@ -2662,7 +2662,7 @@ export function aggregateSessionUsageForFamily({
 }
 
 /**
- * 批量预聚合全部 7 个用量页预设区间及各配额池独立周期（复用同一次条目收集和时间剪枝），供前端进入「用量统计」时静默预取实现 0ms 瞬切。
+ * Batch pre-aggregate all 7 Consumption page preset ranges and each quota pool's independent cycle (reusing the same entry collection and time pruning) for silent prefetching on entering "Usage Stats" to achieve 0ms instant switching.
  */
 export function aggregateConsumptionPresetBundle(params) {
   const { activeCascadeId = null, activeFamilyCascadeIds = null, endpoint = null } = params || {};

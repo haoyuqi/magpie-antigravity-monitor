@@ -1,14 +1,16 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 本地 Antigravity (Desktop / IDE / CLI) SQLite + WAL 会话摘要、轨迹直读与标题解析器。
+ * @fileoverview Local Antigravity (Desktop / IDE / CLI) SQLite + WAL session summary, direct trajectory reader, and title parser.
  *
- * 核心能力：
- * 1. 解析 `<product>/annotations/<cascadeId>.pbtxt` 中的真实会话标题（兼容 UTF-8 直出与八进制/十六进制字节转义）；
- * 2. 通过 Node 22.5+ 内置 `node:sqlite`（只读 + `SQLITE_BUSY` 退避重试 + WAL `mtime+size` 复合签名缓存）扫描
- *    `<product>/conversation_summaries.db`（含 `raw_summary` 与 `conversation_parents` 表），还原会话摘要与旁路提问父子映射；
- * 3. 只读解码 `<product>/conversations/<cascadeId>.db`，自动过滤分叉/旁路提问克隆自父会话的步骤与 `gen_metadata`
- *    （`originCid !== cascadeId`），并对 `step_payload` 做按需列投影（仅读取 `USER_INPUT` 轮次提问、`INVOKE_SUBAGENT`
- *    及运行态末尾步骤，O(1) 跳过大体积工具输出页），完整保留耗时、TTFT、轮次导轨与 10 通道上下文构成。
+ * Core capabilities:
+ * 1. Parse real conversation titles from `<product>/annotations/<cascadeId>.pbtxt` (supports raw UTF-8 and octal/hex byte escapes);
+ * 2. Scan `<product>/conversation_summaries.db` (including `raw_summary` and `conversation_parents` tables) via Node 22.5+ built-in
+ *    `node:sqlite` (read-only + `SQLITE_BUSY` backoff retry + WAL `mtime+size` composite signature cache) to restore conversation
+ *    summaries and side-question parent-child mappings;
+ * 3. Read-only decode `<product>/conversations/<cascadeId>.db`, automatically filter out steps and `gen_metadata` cloned from parent
+ *    conversations via fork/side-question (`originCid !== cascadeId`), and perform on-demand column projection on `step_payload`
+ *    (reading only `USER_INPUT` turn prompts, `INVOKE_SUBAGENT`, and active tail steps while skipping large tool output pages in O(1)),
+ *    preserving full duration, TTFT, turn rails, and 10-channel context breakdown.
  */
 
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
@@ -52,7 +54,7 @@ export {
 const UUID_FILE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * 从 `annotations/<cascadeId>.pbtxt` 文本内容中提取顶层 `title` 字段。
+ * Extract the top-level `title` field from `annotations/<cascadeId>.pbtxt` text content.
  *
  * @param {string} rawText
  * @returns {string}
@@ -71,7 +73,7 @@ export function parseAnnotationPbtxtTitle(rawText) {
 }
 
 /**
- * 按会话 ID 在各产品目录的 `annotations/<cascadeId>.pbtxt` 中查找标题。
+ * Look up the conversation title in `annotations/<cascadeId>.pbtxt` across product directories by cascade ID.
  *
  * @param {string} cascadeId
  * @param {string[]} [annotationDirs=ANNOTATION_DIRS]
@@ -89,14 +91,14 @@ export function readAnnotationTitleForCascade(cascadeId, annotationDirs = ANNOTA
       const title = parseAnnotationPbtxtTitle(readFileSync(filePath, 'utf8'));
       if (title) return title;
     } catch {
-      // 忽略单文件读取失败
+      // Ignore single-file read failure
     }
   }
   return '';
 }
 
 // ---------------------------------------------------------------------------
-// 零依赖轻量 Protobuf Wire 解码器（按需提取指标字段，O(1) 跳过大体积载荷）
+// Zero-dependency lightweight Protobuf Wire decoder (extracts metric fields on demand, skips large payloads in O(1))
 // ---------------------------------------------------------------------------
 
 const PROTO_STATIC_MODELS = Object.freeze({
@@ -405,8 +407,8 @@ function decodeProtoCascadeTrajectorySummary(rawBlob) {
 }
 
 /**
- * 读取并缓存各产品数据根目录（Desktop / IDE / CLI）下的 `conversation_summaries.db` 完整快照。
- * 使用 `.db` 与 `.db-wal` 复合签名做内存 Memoize，未发生写入时零 I/O 返回。
+ * Read and cache a full snapshot of `conversation_summaries.db` under each product data root (Desktop / IDE / CLI).
+ * Uses a composite `.db` + `.db-wal` signature for in-memory memoization, returning with zero I/O when no writes occurred.
  *
  * @param {string[]} [productRoots=PRODUCT_DATA_ROOTS]
  * @param {{ forceRefresh?: boolean }} [options={}]
@@ -722,7 +724,7 @@ export function readLocalSummarySnapshot(productRoots = PRODUCT_DATA_ROOTS, { fo
             (childSummary.trajectoryMetadata?.subagentSpec ||
               (Number(childSummary.trajectoryType) > 0 && Number(childSummary.trajectoryType) !== 22))
           ) {
-            // 排除通过 fork 创建的蜂群工蜂或常规子代理，避免误归入旁路提问
+            // Exclude swarm workers or regular subagents created via fork to avoid misclassifying them as side questions
             continue;
           }
           const parentSummary = nextSummariesObj[parentLower];
@@ -738,7 +740,7 @@ export function readLocalSummarySnapshot(productRoots = PRODUCT_DATA_ROOTS, { fo
         }
       });
     } catch {
-      // 忽略正在初始化或不可读的单个 SQLite 摘要库
+      // Ignore individual SQLite summary databases that are still initializing or unreadable
     }
   }
 
@@ -776,7 +778,7 @@ export function readLocalSummarySnapshot(productRoots = PRODUCT_DATA_ROOTS, { fo
 }
 
 /**
- * 读取并缓存各产品数据根目录下的 `conversation_summaries.db` 摘要索引（返回 `Map`，保持向后兼容）。
+ * Read and cache the `conversation_summaries.db` summary index under each product data root (returns `Map` for backward compatibility).
  *
  * @param {string[]} [productRoots=PRODUCT_DATA_ROOTS]
  * @returns {Map<string, object>}
@@ -840,16 +842,16 @@ function decodeProtoChildTokenGroupSlice(buf, state, end, depth = 0) {
     if (fn === 1 && wt === 2) {
       name = readProtoString(buf, state, end);
     } else if (fn === 2 && wt === 2 && depth < 2) {
-      // 子级 TokenGroup 的 children 位于 field 2
+      // Child TokenGroup children are located in field 2
       children.push(decodeProtoChildTokenGroupSlice(buf, state, readSubEnd(buf, state, end), depth + 1));
     } else if (fn === 2 && wt === 0) {
       const tNum = Number(BigInt.asUintN(32, readProtoVarint(buf, state, end)));
       type = PROTO_TOKEN_TYPES[tNum] || '';
     } else if (fn === 3 && wt === 0) {
-      // 子级 TokenGroup 的 numTokens 位于 field 3
+      // Child TokenGroup numTokens is located in field 3
       numTokens = Number(BigInt.asIntN(32, readProtoVarint(buf, state, end)));
     } else if (fn === 4 && wt === 0) {
-      // 兼容直接按顶层结构编码的子组（numTokens 位于 field 4）
+      // Support child groups encoded directly with top-level layout (numTokens in field 4)
       numTokens = Number(BigInt.asIntN(32, readProtoVarint(buf, state, end)));
     } else if (fn === 5 && wt === 2 && depth < 2) {
       children.push(decodeProtoChildTokenGroupSlice(buf, state, readSubEnd(buf, state, end), depth + 1));
@@ -1612,7 +1614,7 @@ function parseImageBufferDimensions(buf) {
 }
 
 /**
- * 仅读取本地生成图片文件前 32KB 头部字节解析真实像素尺寸（PNG / JPEG / WebP），用于精确匹配图片分辨率计费档位。
+ * Read only the first 32KB header bytes of a locally generated image file to parse its actual pixel dimensions (PNG / JPEG / WebP) for accurate resolution-tier billing.
  *
  * @param {string} rawUri
  * @returns {{ width: number, height: number } | null}
@@ -1928,8 +1930,8 @@ function hasContextBreakdownPayload(chat) {
 }
 
 /**
- * 从单个会话的本地 SQLite 数据库（`<product>/conversations/<cascadeId>.db`）提取步骤元数据、按需载荷与生成器元数据。
- * 自动过滤分叉/旁路提问克隆自父会话的步骤（`originCid !== cascadeId`），并按需解码末尾上下文拆解。
+ * Extract step metadata, on-demand payloads, and generator metadata from a single conversation's local SQLite database (`<product>/conversations/<cascadeId>.db`).
+ * Automatically filters out steps cloned from parent conversations via fork/side-question (`originCid !== cascadeId`) and decodes the trailing context breakdown on demand.
  *
  * @param {string} dbFilePath
  * @param {{ cascadeId?: string, isRunning?: boolean }} [options={}]
@@ -1964,7 +1966,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
         }
         trajectoryType = Number(metaRow?.trajectory_type || 0);
       } catch {
-        // 兼容未包含 trajectory_meta 表的精简库
+        // Support slim databases without the trajectory_meta table
       }
       const isSideQuestion = trajectoryType === 22;
 
@@ -1989,7 +1991,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
           );
         }
       } catch {
-        // 兼容未包含 trajectory_metadata_blob 表的库
+        // Support databases without the trajectory_metadata_blob table
       }
 
       let forkParentConversationId = '';
@@ -2013,7 +2015,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
           }
         }
       } catch {
-        // 兼容未包含 parent_references 表的库
+        // Support databases without the parent_references table
       }
 
       const genRows = db.prepare('SELECT idx, data FROM gen_metadata ORDER BY idx ASC').all();
@@ -2030,7 +2032,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
             .trim()
             .toLowerCase();
           if (gmCid && normCid && gmCid !== normCid) {
-            // 过滤旁路提问或会话分叉从父会话克隆来的历史生成器记录
+            // Filter out historical generator records cloned from parent conversations via side-question or fork
             continue;
           }
           if (!rootConversationId && decoded.extraMeta?.root_cascade_id) {
@@ -2041,14 +2043,14 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
           }
           ownGenRecords.push({ rawData: row.data, gm: decoded });
         } catch {
-          // 忽略单条损坏的 generatorMetadata
+          // Ignore single corrupted generatorMetadata record
         }
       }
 
       if (ownGenRecords.length > 0) {
-        // 从末尾向前定位最近一条包含完整上下文拆解（tokenBreakdown / promptSections / tools / messagePrompts）的记录，
-        // 避免末尾紧跟 CHECKPOINT 压缩步或多条纯 plannerConfig 记录时漏解压缩前的静态上下文构成；
-        // 若末尾完整记录因回退/中断成为 `stepIndices: []`，继续跳过被宿主裁剪的轻量记录并尝试补解更早的完整带索引记录。
+        // Scan backward from the end to locate the latest record containing a full context breakdown (tokenBreakdown / promptSections / tools / messagePrompts),
+        // preventing missed static context composition when trailing CHECKPOINT compaction steps or plannerConfig-only records follow;
+        // if a trailing full record has `stepIndices: []` due to rollback/interruption, keep skipping host-trimmed lightweight records to decode an earlier full indexed record.
         let foundUnindexedBreakdown = false;
         for (let i = ownGenRecords.length - 1; i >= 0; i--) {
           const rec = ownGenRecords[i];
@@ -2067,7 +2069,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
               }
             }
           } catch {
-            // 保留轻量版本
+            // Keep lightweight version
           }
         }
       }
@@ -2099,14 +2101,14 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
           try {
             metadata = decodeProtoStepMeta(row.metadata, idx);
           } catch {
-            // 忽略单步元数据解码异常
+            // Ignore single-step metadata decode error
           }
         }
         const originCid = String(metadata.sourceTrajectoryStepInfo?.cascadeId || '')
           .trim()
           .toLowerCase();
         if (originCid && normCid && originCid !== normCid) {
-          // 过滤克隆自父会话的步骤，防止双倍重复计费
+          // Filter out steps cloned from parent conversations to prevent double billing
           continue;
         }
         ownStepRecords.push({ idx, stepTypeNum, statusNum, metadata });
@@ -2151,7 +2153,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
           }
         }
       } catch {
-        // 忽略索引构建异常
+        // Ignore index build error
       }
 
       const payloadByIdx = new Map();
@@ -2170,7 +2172,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
             }
           }
         } catch {
-          // 兼容不含 step_payload 列的旧表
+          // Support legacy tables without the step_payload column
         }
       }
 
@@ -2241,7 +2243,7 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
               stepObj.generateImage = decodedPayload.generateImage;
             }
           } catch {
-            // 忽略单步载荷解析异常
+            // Ignore single-step payload parse error
           }
         }
         steps.push(stepObj);
@@ -2282,8 +2284,8 @@ export function readLocalSqliteTrajectory(dbFilePath, options = {}) {
 }
 
 /**
- * 轻量读取本地 SQLite 会话库的父/根会话关联（不扫描或解码 `steps` 全表），
- * 供 `cli-statusline.mjs` 在当前 ID 为子代理时快速跳转至根会话库。
+ * Lightweight reader for parent/root conversation links in a local SQLite conversation DB (without scanning or decoding the full `steps` table),
+ * used by `cli-statusline.mjs` to jump quickly to the root conversation DB when the current ID is a subagent.
  *
  * @param {string} dbFilePath
  * @returns {{ parentConversationId: string, rootConversationId: string } | null}
@@ -2311,7 +2313,7 @@ export function readLocalSqliteParentLink(dbFilePath) {
           rootConversationId = tm.rootConversationId || '';
         }
       } catch {
-        // 兼容未包含 trajectory_metadata_blob 的精简库
+        // Support slim databases without trajectory_metadata_blob
       }
 
       if (!parentConversationId && !rootConversationId) {
@@ -2332,7 +2334,7 @@ export function readLocalSqliteParentLink(dbFilePath) {
             }
           }
         } catch {
-          // 忽略 gen_metadata 探测异常
+          // Ignore gen_metadata probe error
         }
       }
 
@@ -2344,8 +2346,8 @@ export function readLocalSqliteParentLink(dbFilePath) {
 }
 
 /**
- * 仅读取本地 SQLite 会话库末尾 `tailLimit` 步（`ORDER BY idx DESC LIMIT ?`），
- * 供旁路运行会话活体检测（`extractLiveActivity`）使用，避免全表扫描与 `gen_metadata` 解码。
+ * Read only the trailing `tailLimit` steps from a local SQLite conversation DB (`ORDER BY idx DESC LIMIT ?`),
+ * used for out-of-band live activity detection (`extractLiveActivity`) without full-table scans or `gen_metadata` decoding.
  *
  * @param {string} dbFilePath
  * @param {number} [tailLimit=16]
@@ -2372,7 +2374,7 @@ export function readLocalSqliteLiveTail(dbFilePath, tailLimit = 16) {
             normCid = String(metaRow.cascade_id).trim().toLowerCase();
           }
         } catch {
-          // 忽略无 trajectory_meta 的库
+          // Ignore databases without trajectory_meta
         }
       }
 
@@ -2395,7 +2397,7 @@ export function readLocalSqliteLiveTail(dbFilePath, tailLimit = 16) {
           try {
             metadata = decodeProtoStepMeta(row.metadata, idx);
           } catch {
-            // 忽略单步元数据解码异常
+            // Ignore single-step metadata decode error
           }
         }
         const originCid = String(metadata.sourceTrajectoryStepInfo?.cascadeId || '')
@@ -2421,7 +2423,7 @@ export function readLocalSqliteLiveTail(dbFilePath, tailLimit = 16) {
             }
           }
         } catch {
-          // 兼容不含 step_payload 列的旧表
+          // Support legacy tables without the step_payload column
         }
       }
 
@@ -2454,7 +2456,7 @@ export function readLocalSqliteLiveTail(dbFilePath, tailLimit = 16) {
             if (decodedPayload.errorMessage) stepObj.errorMessage = decodedPayload.errorMessage;
             if (decodedPayload.invokeSubagent) stepObj.invokeSubagent = decodedPayload.invokeSubagent;
           } catch {
-            // 忽略单步载荷解析异常
+            // Ignore single-step payload parse error
           }
         }
         steps.push(stepObj);

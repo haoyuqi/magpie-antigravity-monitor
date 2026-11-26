@@ -1,11 +1,11 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 零业务依赖的本地 SQLite + WAL 非阻塞只读短连接原语 (`sqlite-client.mjs`)。
+ * @fileoverview Zero-dependency local SQLite + WAL non-blocking read-only short-lived connection primitives (`sqlite-client.mjs`).
  *
- * 核心能力：
- * 1. 惰性加载 Node 22.5+ 内置 `node:sqlite`，自动静默实验特性告警，避免污染 CLI / MCP `stdio`；
- * 2. 组合主库 `.db` 与 `.db-wal` 的 `mtime + size` 生成复合签名（忽略易抖动的 `-shm` 共享内存头），精准感知未 checkpoint 的实时写入；
- * 3. 采用短连接 + `PRAGMA busy_timeout = 1000` + `SQLITE_BUSY` 瞬时锁重试并在 `finally` 中立即释放句柄，绝不阻塞宿主 WAL checkpoint。
+ * Core capabilities:
+ * 1. Lazily load Node 22.5+ built-in `node:sqlite`, silently suppressing experimental feature warnings to avoid polluting CLI / MCP `stdio`;
+ * 2. Combine `mtime + size` of the main `.db` and `.db-wal` into a composite signature (ignoring the jittery `-shm` shared memory header) to accurately detect uncheckpointed live writes;
+ * 3. Use short-lived connections + `PRAGMA busy_timeout = 1000` + transient `SQLITE_BUSY` lock retries and immediately release handles in `finally`, never blocking host WAL checkpoints.
  */
 
 import {
@@ -34,8 +34,8 @@ let sqliteResolved = false;
 let sqliteDatabaseSyncCtor = null;
 
 /**
- * 惰性获取 Node 内置 `node:sqlite` 的 `DatabaseSync` 构造器（兼容测试沙箱注入的 `globalThis.DatabaseSync`）。
- * 首次加载时静默过滤 Node 22 的实验特性告警；当前运行时不支持时返回 `null`。
+ * Lazily obtain the `DatabaseSync` constructor from Node's built-in `node:sqlite` (compatible with test-sandbox-injected `globalThis.DatabaseSync`).
+ * Silently filters Node 22 experimental feature warnings on first load; returns `null` if unsupported by the current runtime.
  *
  * @returns {Function | null}
  */
@@ -70,7 +70,7 @@ export function getNodeSqliteDatabaseSync() {
 }
 
 /**
- * 当前运行时是否具备内置 `node:sqlite` 读取能力。
+ * Whether the current runtime has built-in `node:sqlite` read capability.
  *
  * @returns {boolean}
  */
@@ -79,12 +79,12 @@ export function hasBuiltinNodeSqlite() {
 }
 
 /**
- * 通过零 SQLite 锁的 100 字节文件头探测判断本地 `.db` 是否已完成表结构初始化（或已切入 WAL 且含有效提交帧）。
+ * Determine whether a local `.db` has completed schema initialization (or has switched to WAL with valid committed frames) via a zero-SQLite-lock 100-byte header probe.
  *
- * Windows 下宿主（如 `agy` CLI）新建 `<cid>.db` 执行 `schema init` / `PRAGMA journal_mode = WAL` 的数毫秒内，
- * 若外部进程对 0 字节或仍处于回滚日志模式（`writeVersion !== 2`）的库发起 `sqlite3_open_v2` 查询并持有 `SHARED` 锁，
- * 会直接触发宿主 `trajectory db schema init: database is locked` 并迫使整场会话永久降级至加密 `.pb`。
- * 纯 `fs.openSync` / `fs.readSync` 不申请任何 SQLite 字节区间锁（`LockFileEx`），可安全跳过初始化途中的半成品库。
+ * On Windows, within the few milliseconds while the host (e.g., `agy` CLI) creates `<cid>.db` and runs `schema init` / `PRAGMA journal_mode = WAL`,
+ * if an external process issues a `sqlite3_open_v2` query against a 0-byte DB or one still in rollback journal mode (`writeVersion !== 2`) and holds a `SHARED` lock,
+ * it directly triggers `trajectory db schema init: database is locked` in the host and forces the entire session to permanently downgrade to encrypted `.pb`.
+ * Pure `fs.openSync` / `fs.readSync` acquires no SQLite byte-range locks (`LockFileEx`), safely skipping half-initialized databases.
  *
  * @param {string} dbPath
  * @param {{ dbStat?: import('node:fs').Stats | null, walStat?: import('node:fs').Stats | null, skipWalStat?: boolean }} [opts={}]
@@ -129,7 +129,7 @@ export function isSqliteDbReadyForRead(
       return false;
     }
   } catch {
-    // 忽略瞬时回滚日志探测异常
+    // Ignore transient rollback journal probe errors
   }
 
   let fd = -1;
@@ -180,15 +180,15 @@ export function isSqliteDbReadyForRead(
       try {
         closeSync(fd);
       } catch {
-        // 忽略关闭异常
+        // Ignore close errors
       }
     }
   }
 }
 
 /**
- * 计算 SQLite 主库与 `.db-wal` 预写日志的复合签名（忽略易抖动的 `-shm` 共享内存头），精准感知未 checkpoint 的实时写入。
- * 实际打开前由 `withReadOnlySqliteDb` 经 `isSqliteDbReadyForRead` 拦截未完成 `schema init` 的空文件。
+ * Compute a composite signature of the SQLite main DB and `.db-wal` write-ahead log (ignoring the jittery `-shm` shared memory header) to accurately detect uncheckpointed live writes.
+ * Before actually opening, `withReadOnlySqliteDb` intercepts empty files that have not completed `schema init` via `isSqliteDbReadyForRead`.
  *
  * @param {string} dbPath
  * @returns {{ exists: boolean, mtimeMs: number, sig: string }}
@@ -216,7 +216,7 @@ export function computeSqliteWalSig(dbPath, { skipWalCheck = false } = {}) {
   const dbMtimeMs = Number(dbStat.mtimeMs || 0);
   const dbSize = Number(dbStat.size || 0);
   const walSize = Number(walStat?.size || 0);
-  // 0 字节的空 .db-wal 不含未 checkpoint 事务帧，忽略其 mtime 避免只读打开或宿主 LRU 驱逐触发死循环重扫
+  // A 0-byte empty .db-wal contains no uncheckpointed transaction frames; ignore its mtime to prevent read-only opens or host LRU eviction from triggering infinite rescan loops
   const walMtimeMs = walSize > 0 ? Number(walStat?.mtimeMs || 0) : 0;
   return {
     exists: true,
@@ -300,8 +300,8 @@ function snapshotsMatch(a, b) {
 }
 
 /**
- * 以只读模式打开 SQLite 数据库执行查询并在 `finally` 中立即关闭连接，避免长连接阻塞宿主 WAL checkpoint。
- * 打开前先执行无锁头部就绪校验；存在活跃 WAL 时采用双栅栏一致性快照并在瞬时变化/锁竞争时有限重试，无法确认一致性则跳过本轮读取。
+ * Open the SQLite database in read-only mode to execute a query and immediately close the connection in `finally`, avoiding long-lived connections that block host WAL checkpoints.
+ * Performs a lock-free header readiness check before opening; when an active WAL exists, takes a double-fenced consistency snapshot with bounded retries on transient changes/lock contention, and skips this read round if consistency cannot be confirmed.
  *
  * @template T
  * @param {string} dbPath
@@ -350,7 +350,7 @@ export function withReadOnlySqliteDb(dbPath, queryFn, options = {}) {
       try {
         db.exec('PRAGMA busy_timeout = 1000;');
       } catch {
-        // 兼容最小测试桩
+        // Compatible with minimal test stubs
       }
       return queryFn(db);
     } catch (err) {
@@ -366,7 +366,7 @@ export function withReadOnlySqliteDb(dbPath, queryFn, options = {}) {
         try {
           db.close();
         } catch {
-          // 忽略关闭异常
+          // Ignore close errors
         }
       }
       if (tempWalDir) {
@@ -382,7 +382,7 @@ export function withReadOnlySqliteDb(dbPath, queryFn, options = {}) {
 }
 
 /**
- * 归一化 SQLite `TEXT` 时间列（如 `'2026-11-18 08:12:00+00:00'` -> ISO-8601），剔除零值哨兵时间。
+ * Normalize SQLite `TEXT` timestamp columns (e.g. `'2026-11-18 08:12:00+00:00'` -> ISO-8601), stripping zero-value sentinel timestamps.
  *
  * @param {unknown} value
  * @returns {string}

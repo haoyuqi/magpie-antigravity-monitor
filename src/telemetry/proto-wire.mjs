@@ -1,17 +1,17 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 零外部依赖的二进制 Protobuf Wire 跳读游标与 `prototext` 字符串反转义原语 (`proto-wire.mjs`)。
+ * @fileoverview Zero-dependency binary Protobuf Wire skip-read cursor and `prototext` string unescaping primitives (`proto-wire.mjs`).
  *
- * 核心能力：
- * 1. 无需引入 `protobufjs`，以 `O(1)` 游标位移跳过大体积定长/变长/Group 载荷；
- * 2. 基于 `BigInt` 无损解码 64-bit Varint、`google.protobuf.Timestamp` 纳秒级时间戳与 `Duration`；
- * 3. 按原始 UTF-8 字节流无损反转义 `prototext` 的 `\ddd` 八进制、`\xHH` 十六进制与 `\uXXXX` 多字节字符。
+ * Core capabilities:
+ * 1. Skip large fixed-length, length-delimited, and group payloads with an `O(1)` cursor offset without requiring `protobufjs`;
+ * 2. Losslessly decode 64-bit Varints, nanosecond-precision `google.protobuf.Timestamp`, and `Duration` using `BigInt`;
+ * 3. Losslessly unescape `prototext` `\ddd` octal, `\xHH` hex, and `\uXXXX` multibyte sequences by raw UTF-8 byte stream.
  */
 
 const protoUtf8Decoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
 
 /**
- * 解码 Protobuf Text Format (`prototext`) 字符串字面量，兼容 UTF-8 原文与 `\ddd` / `\xHH` 字节转义。
+ * Decode a Protobuf Text Format (`prototext`) string literal, supporting raw UTF-8 text and `\ddd` / `\xHH` byte escapes.
  *
  * @param {string} raw
  * @returns {string}
@@ -102,7 +102,7 @@ export function readProtoVarint(buf, state, limit = buf.length) {
     shift += 7n;
   }
   while (state.off < limit && (buf[state.off++] & 0x80) !== 0) {
-    // 安全排空超长 varint 延续字节
+    // Safely drain oversized varint continuation bytes
   }
   return BigInt.asUintN(64, result);
 }
@@ -211,7 +211,7 @@ export function decodeProtoMapStringEntry(buf, state, end) {
 }
 
 // ---------------------------------------------------------------------------
-// 无损 Protobuf Wire 编码及按字段号定向修补原语（保留所有未知/未触碰字段原字节）
+// Lossless Protobuf Wire encoding and field-number-targeted patching primitives (preserving raw bytes of all unknown/untouched fields)
 // ---------------------------------------------------------------------------
 
 export function encodeProtoVarint(value) {
@@ -257,7 +257,7 @@ export function encodeProtoTimestamp(epochMs) {
 }
 
 /**
- * 将原始 Protobuf 二进制消息拆分为顶层原始字段切片，确保未知字段零损透传。
+ * Split a raw Protobuf binary message into top-level raw field slices, ensuring lossless passthrough of unknown fields.
  *
  * @param {Uint8Array | Buffer} raw
  * @returns {Array<{ fn: number, wt: number, raw: Buffer, payload: Buffer }>}
@@ -308,7 +308,7 @@ export function splitProtoRawFields(raw) {
 }
 
 /**
- * 按字段号定向替换、删除（传 `null`）或追加 Protobuf 顶层字段，其余未知字段原字节无损保留。
+ * Target-replace, delete (pass `null`), or append top-level Protobuf fields by field number while preserving raw bytes of all other unknown fields losslessly.
  *
  * @param {Uint8Array | Buffer} raw
  * @param {Map<number, Buffer | Uint8Array | null>} replacements

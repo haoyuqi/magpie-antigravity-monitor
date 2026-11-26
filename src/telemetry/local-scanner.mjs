@@ -1,12 +1,12 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 本地磁盘会话文件发现、外部 IDE/CLI 深层统计缓存加载与历史轨迹增量同步。
+ * @fileoverview Local disk conversation file discovery, external IDE/CLI deep stats cache loading, and incremental trajectory sync.
  *
- * 负责：
- * 1. 扫描 `~/.gemini/antigravity/conversations` 下的本地 `.db` / `.pb` / `.db-wal` 会话文件及修改时间；
- * 2. 读取跨端共享的 `.deep_stats_cache.json`（兼容 IDE / CLI / Standalone 多端步骤数据合并与账号归属隔离）；
- * 3. 将 Language Server 摘要、本地磁盘文件与内存缓存三方会话列表按大小写不敏感键对齐，并以受控并发（最多 4 路）
- *    拉取新增或 Schema 过期的会话轨迹步骤，持久化至 `trajectory_usage_cache.json`。
+ * Responsibilities:
+ * 1. Scan local `.db` / `.pb` / `.db-wal` conversation files and modification times under `~/.gemini/antigravity/conversations`;
+ * 2. Read cross-client shared `.deep_stats_cache.json` (supporting IDE / CLI / Standalone step merging and per-account ownership isolation);
+ * 3. Align Language Server summaries, local disk files, and in-memory cache conversation lists by case-insensitive keys, and fetch
+ *    new or schema-outdated trajectory steps with bounded concurrency (up to 4), persisting to `trajectory_usage_cache.json`.
  */
 
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
@@ -63,8 +63,8 @@ let knownBrainCascadeSet = null;
 let knownBrainCascadeSetRootsKey = '';
 
 /**
- * 联合扫描本地多端（Desktop / CLI / IDE）的 `conversations` 与 `brain/<id>/.system_generated/logs/transcript.jsonl`，
- * 按小写 `cascadeId` 归并关联磁盘文件路径。
+ * Jointly scan local multi-client (Desktop / CLI / IDE) `conversations` and `brain/<id>/.system_generated/logs/transcript.jsonl`,
+ * merging associated disk file paths by lowercase `cascadeId`.
  *
  * @returns {Map<string, string[]>}
  */
@@ -86,7 +86,7 @@ function discoverLocalConversationFiles() {
         map.get(cascadeId).push(join(dir, name));
       }
     } catch {
-      // 忽略目录读取异常
+      // Ignore directory read error
     }
   }
 
@@ -125,7 +125,7 @@ function discoverLocalConversationFiles() {
         map.get(cascadeId).push(transcriptPath);
       }
     } catch {
-      // 忽略目录读取异常
+      // Ignore directory read error
     }
   }
   knownBrainCascadeSet = nextBrainUuidSet.size > 0 ? nextBrainUuidSet : null;
@@ -146,7 +146,7 @@ function discoverLocalConversationFiles() {
           }
         }
       } catch {
-        // 忽略注释目录读取异常
+        // Ignore annotations directory read error
       }
     }
   }
@@ -164,15 +164,15 @@ function readConversationMtime(files = []) {
       if (/\.db-wal$/i.test(fullPath) && Number(st?.size || 0) <= 0) continue;
       mtimeMs = Math.max(mtimeMs, Number(st?.mtimeMs || 0));
     } catch {
-      // 轨迹文件可能在目录枚举后被宿主删除。
+      // Trajectory file may have been removed by the host after directory listing.
     }
   }
   return mtimeMs;
 }
 
 /**
- * 加载并解析跨端（IDE / Standalone / JetBrains）写入的 `.deep_stats_cache.json` 缓存。
- * 使用文件签名 (`mtimeMs + size`) 进行 Memoize，文件未变化时直接返回内存 Map。
+ * Loads and parses `.deep_stats_cache.json` written across clients (IDE / Standalone / JetBrains).
+ * Memoized by file signature (`mtimeMs + size`), returning the in-memory Map directly when unchanged.
  *
  * @returns {Map<string, {cascadeId: string, appSource: string, accountName: string, title: string, lastModifiedMs: number, steps: object[]}>}
  */
@@ -186,7 +186,7 @@ export function loadExternalDeepStatsCache() {
       sigParts.push(`${candidate}:${st.mtimeMs || 0}:${st.size || 0}`);
       existingFiles.push(candidate);
     } catch {
-      // 忽略 stat 异常
+      // Ignore stat errors
     }
   }
   if (existingFiles.length === 0) {
@@ -333,9 +333,9 @@ function normalizeOwnerAccount(value) {
 }
 
 /**
- * 为会话步骤维护细粒度账号归属：
- * - 已存在于旧缓存中的历史步骤保留原归属账号（兼容跨账号续聊同一会话）；
- * - 切换账号后在该会话中新产生的步骤写入当前活跃账号 `step.accountName`，仅供「可用额度」按账号隔离统计。
+ * Maintain fine-grained account ownership for conversation steps:
+ * - Historical steps already present in the prior cache retain their original owner account (supporting cross-account continuation of the same conversation);
+ * - New steps generated in the conversation after switching accounts record the current active account `step.accountName`, used solely for per-account "Available Quota" isolation.
  */
 const MAX_PRESERVED_BREAKDOWN_STEPS = 64;
 
@@ -396,9 +396,9 @@ function isSameHistoricalStep(nextStep, prevStep) {
 }
 
 /**
- * 宿主只保留末尾一条完整 `gen_metadata` 并裁剪历史拆解；对话运行或回退重扫时，
- * 为当前活跃窗口内（最近压缩前锚点至末尾，最多保留 64 步）完全匹配的未变更历史步保留已缓存的 `contextBreakdown`，
- * 同时维护紧凑的 5 通道静态基线，确保回退到任意较早轮次后上下文窗口拆解不归零。
+ * The host retains only the trailing complete `gen_metadata` and prunes historical breakdowns; during active runs or rollback rescans,
+ * preserve cached `contextBreakdown` for exact-matching unchanged historical steps within the active window (from the latest pre-compaction anchor to the end, up to 64 steps),
+ * while maintaining a compact 5-channel static baseline so context window breakdowns do not reset to zero after rolling back to an earlier turn.
  */
 function preserveCachedContextTelemetry(steps, prev) {
   if (!Array.isArray(steps) || steps.length === 0) {
@@ -530,8 +530,8 @@ function attachStepAccountOwners(steps, prev, currentAccountName, entryAccountNa
   return mutated ? out : steps;
 }
 /**
- * 将旧版缓存签名中 0 字节 `.db-wal` 的非零 mtime 规范化为 `|0:0`（仅当主库签名和 `walSize=0` 完全一致时生效），
- * 避免从 PR #38 前升级后把数百个未变更的本地 SQLite 历史库一次性全部重扫。
+ * Normalize non-zero mtimes of 0-byte `.db-wal` files in legacy cache signatures to `|0:0` (effective only when main DB signature and `walSize=0` match),
+ * avoiding rescanning hundreds of unchanged local SQLite history DBs all at once after upgrading from pre-PR #38.
  *
  * @param {string} sigStr
  * @returns {string}
@@ -563,7 +563,8 @@ const swarmManifestMemo = new Map();
 let lastKnownLocalLiveCascadeIds = null;
 
 /**
- * 收集目标端点当前仍存活的原始会话源 ID 集合（供「重建缓存」区分“存活待重扫会话”和“原对话已被删除需永久归档留存会话”）。
+ * Collect the set of original conversation source IDs still live on the target endpoint (used by "Rebuild Cache" to distinguish
+ * "live conversations pending rescan" from "deleted conversations to be permanently archived and retained").
  *
  * @param {object|null} [endpoint=null]
  * @returns {Set<string> | null}
@@ -680,7 +681,7 @@ function findSwarmMembersPath(cascadeId) {
 }
 
 /**
- * 按会话 ID 精确读取本地 `brain/<cascadeId>/.system_generated/swarm/members.json` 蜂群花名册（O(1) 定点读取 + `mtimeMs + size` 缓存）。
+ * Read the local `brain/<cascadeId>/.system_generated/swarm/members.json` swarm roster by cascade ID (O(1) targeted read + `mtimeMs + size` cache).
  *
  * @param {string} cascadeId
  * @returns {{
@@ -890,7 +891,7 @@ function readLocalTranscriptHeadTitle(cidLower) {
       }
     }
   } catch {
-    // 忽略单文件头部读取异常
+    // Ignore single-file header read error
   }
   return '';
 }
@@ -924,9 +925,9 @@ function hasLocalPbFile(diskFiles = []) {
 }
 
 /**
- * 计算本地 `.pb` 与 `transcript.jsonl` 辅助轨迹文件的复合签名（`mtimeMs + size`）。
- * 仅在会话不存在有效 SQLite 主库、或同时存在 `.pb` / 处于 `offlineTranscriptFallback` 模式时按需调用，
- * 确保主 `.db` 因 `database is locked` 沦为空壳而实际数据写入 `.pb` + `transcript.jsonl` 时仍能实时感知变更。
+ * Compute the composite signature (`mtimeMs + size`) of local `.pb` and `transcript.jsonl` auxiliary trajectory files.
+ * Called on demand only when no valid primary SQLite DB exists, or when `.pb` coexists / `offlineTranscriptFallback` is active,
+ * ensuring changes are still detected in real time if the primary `.db` becomes an empty shell due to `database is locked` while data is written to `.pb` + `transcript.jsonl`.
  *
  * @param {string[]} [diskFiles=[]]
  * @returns {{ mtimeMs: number, sig: string }}
@@ -951,7 +952,7 @@ function computeFallbackDiskInfo(diskFiles = []) {
       if (m > mtimeMs) mtimeMs = m;
       parts.push(`${isPb ? 'p' : 't'}:${Math.floor(m)}:${sz}`);
     } catch {
-      // 忽略单文件瞬时 stat 异常
+      // Ignore transient single-file stat error
     }
   }
   if (parts.length > 1) parts.sort();
@@ -1062,7 +1063,7 @@ function enrichSqliteStepsFromTranscriptIfNeeded(cidLower, sqliteSteps) {
         );
       }
     } catch {
-      // 忽略损坏 JSON 行
+      // Ignore corrupted JSON line
     }
   }
 
@@ -1118,7 +1119,7 @@ function unwrapOfflineToolArgString(val) {
       const parsed = JSON.parse(trimmed);
       if (typeof parsed === 'string') return parsed.trim();
     } catch {
-      // 忽略非标准二次转义
+      // Ignore non-standard double escaping
     }
   }
   return trimmed.replace(/^"+|"+$/g, '').trim();
@@ -1200,9 +1201,9 @@ function extractSubagentRefsFromTranscriptLines(transcriptLines = [], baseSteps 
 }
 
 /**
- * 当 Language Server RPC 离线、跨端不可达（如 `agy` CLI 独立会话目录）或本地 `.db` 因初始化锁冲突降级为 `.pb` 空壳时，
- * 优先融合本地可用 SQLite、`conversation_summaries.db`、`annotations/<id>.pbtxt` 与 `transcript.jsonl`
- * （及可选 `.deep_stats_cache.json`）恢复模型步骤、Token 消耗、轮次提问、派生子代理与真实标题。
+ * When Language Server RPC is offline, unreachable across clients (e.g. standalone `agy` CLI session directory), or local `.db` degrades to an empty `.pb` shell due to init lock contention,
+ * fuse locally available SQLite, `conversation_summaries.db`, `annotations/<id>.pbtxt`, and `transcript.jsonl`
+ * (plus optional `.deep_stats_cache.json`) to recover model steps, token usage, turn prompts, spawned subagents, and real titles.
  */
 function loadOfflineTranscriptConversation(
   conv,
@@ -1328,7 +1329,7 @@ function loadOfflineTranscriptConversation(
       }
     }
 
-    // 补充可能已刷入 transcript.jsonl 但尚未刷入 SQLite 的尾部步骤
+    // Supplement trailing steps that may have been flushed to transcript.jsonl but not yet to SQLite
     for (const [sIdx, line] of transcriptByStepIdx.entries()) {
       if (sIdx <= maxSqliteStepIdx) continue;
       const upperType = String(line.type || '').trim().toUpperCase();
@@ -1513,8 +1514,8 @@ function loadOfflineTranscriptConversation(
 }
 
 /**
- * 读取指定会话在本地 `brain/<cascadeId>/.system_generated/logs/transcript.jsonl` 的尾部步骤。
- * 采用 `mtimeMs + size` 签名缓存与尾部 96KB 定长切片读取，避免长会话大文件全量读取阻塞事件循环。
+ * Read trailing steps of a conversation from local `brain/<cascadeId>/.system_generated/logs/transcript.jsonl`.
+ * Uses `mtimeMs + size` signature caching and fixed 96KB tail slice reads to avoid blocking the event loop on large session files.
  *
  * @param {string} cascadeId
  * @param {number} [maxLines=24]
@@ -1570,7 +1571,7 @@ function readTranscriptTailSteps(cascadeId, maxLines = 24) {
         try {
           closeSync(fd);
         } catch {
-          // 忽略关闭异常
+          // Ignore close error
         }
       }
     } else {
@@ -1593,7 +1594,7 @@ function readTranscriptTailSteps(cascadeId, maxLines = 24) {
           steps.push(parsed);
         }
       } catch {
-        // 忽略头部被截断或末尾正在写入的半行 JSON
+        // Ignore truncated leading line or half-written trailing JSON line
       }
     }
     if (transcriptTailMemo.size >= MAX_TRANSCRIPT_MEMO_ENTRIES && !transcriptTailMemo.has(normId)) {
@@ -1652,21 +1653,21 @@ function resolveBestLiveActivity(
     transcriptSteps.length > 0 ? extractLiveActivity(transcriptSteps, true, fallbackMs) : null;
 
   if (rpcAct && transcriptAct) {
-    // 1. 先按真实 Cortex 步骤序号对齐比较：尚未刷入 transcript.jsonl 的新步骤（如正在进行的 CHECKPOINT 压缩或流式回复）优先采用 RPC
+    // 1. Compare by actual Cortex step index first: newer steps not yet flushed to transcript.jsonl (e.g., active CHECKPOINT compaction or streaming response) prefer RPC
     const rpcStepIdx = getMaxMeaningfulStepIndex(rpcRawSteps);
     const transStepIdx = getMaxMeaningfulStepIndex(transcriptSteps);
     if (rpcStepIdx >= 0 && transStepIdx >= 0 && rpcStepIdx !== transStepIdx) {
       return rpcStepIdx > transStepIdx ? rpcAct : transcriptAct;
     }
 
-    // 2. 同一步骤序号下优先采用语义更明确的状态（上下文压缩 > 工具执行 > 流式生成 > 工具后置思考）
+    // 2. At the same step index, prefer the more specific semantic state (compacting > tool execution > streaming generation > post-tool thinking)
     const rpcScore = scoreLiveActivitySpecificity(rpcAct);
     const transScore = scoreLiveActivitySpecificity(transcriptAct);
     if (rpcScore !== transScore) {
       return rpcScore > transScore ? rpcAct : transcriptAct;
     }
 
-    // 3. 同一步骤且均为压缩态时，优先采用携带精确完成时刻的 RPC 状态；常规步骤则优先采用含完整参数的 transcript.jsonl
+    // 3. At the same step and both in compacting state, prefer RPC with exact completion timestamp; for regular steps prefer transcript.jsonl with full arguments
     const rpcMs = Number(rpcAct.startedAtMs || 0);
     const transMs = Number(transcriptAct.startedAtMs || 0);
     if (rpcAct.phase === 'compacting' && rpcMs !== transMs) {
@@ -1683,8 +1684,8 @@ function resolveBestLiveActivity(
 }
 
 /**
- * 清洗并裁剪 `subagentSpec`，仅保留 UI 与分组所需的 `typeName` 和 `role`，
- * 剔除体积较大的 `initialPrompt`，避免膨胀 `trajectory_usage_cache.json`。
+ * Sanitize and trim `subagentSpec`, keeping only `typeName` and `role` needed for UI and grouping,
+ * and stripping the large `initialPrompt` to avoid bloating `trajectory_usage_cache.json`.
  *
  * @param {object|null|undefined} rawSpec
  * @returns {{ typeName: string, role: string } | null}
@@ -1698,7 +1699,7 @@ function sanitizeSubagentSpec(rawSpec) {
 }
 
 /**
- * 按字段合并两个来源的 `subagentSpec`，避免仅含 `typeName` 的元数据覆盖掉父步骤中的 `role`。
+ * Merge `subagentSpec` field by field from two sources so metadata containing only `typeName` does not overwrite `role` from the parent step.
  *
  * @param {object|null|undefined} primary
  * @param {object|null|undefined} secondary
@@ -1715,7 +1716,7 @@ function mergeSubagentSpecs(primary, secondary) {
 }
 
 /**
- * 从主/父会话的原始轨迹步骤 (`CORTEX_STEP_TYPE_INVOKE_SUBAGENT`) 中提取派生子代理列表。
+ * Extract the list of spawned subagents from raw trajectory steps (`CORTEX_STEP_TYPE_INVOKE_SUBAGENT`) of a root/parent conversation.
  *
  * @param {object[]} [rawSteps=[]]
  * @returns {Array<{ cascadeId: string, role: string, typeName: string, createdTimeMs: number, spawnOrder: number }>}
@@ -1732,7 +1733,7 @@ function extractSubagentRefsFromSteps(rawSteps = []) {
       try {
         toolArgs = JSON.parse(argsJson);
       } catch {
-        // 忽略非标准 JSON
+        // Ignore non-standard JSON
       }
     }
     const subSpecs = Array.isArray(inv.subagents) ? inv.subagents : [];
@@ -1778,7 +1779,7 @@ function extractSubagentRefsFromSteps(rawSteps = []) {
 }
 
 /**
- * 从 `GetCascadeTrajectory` 响应的 `trajectory.metadata` 中提取子代理归属关系与角色元数据。
+ * Extract subagent ownership and role metadata from `trajectory.metadata` of a `GetCascadeTrajectory` response.
  *
  * @param {object} trajRes
  * @param {object} [fallback={}]
@@ -1815,8 +1816,8 @@ function extractTrajectorySubagentMeta(trajRes, fallback = {}) {
 }
 
 /**
- * 枚举所有会话（合并 LS `trajectorySummaries`、本地磁盘文件与 `trajectoryCache`），
- * 选定当前活跃会话，并以最多 4 路并发增量同步更新了的会话轨迹。
+ * Enumerate all conversations (merging LS `trajectorySummaries`, local disk files, and `trajectoryCache`),
+ * select the currently active conversation, and incrementally sync updated conversation trajectories with up to 4-way concurrency.
  *
  * @param {{
  *   summariesObj?: Record<string, object>,
@@ -1885,7 +1886,7 @@ export async function enumerateAndSyncConversations({
   let cacheDirty = hasPendingSave();
   const diskConvMap = isRemote ? new Map() : discoverLocalConversationFiles();
 
-  // 构建大小写不敏感索引，将同一会话的不同大小写键合并至唯一规范键（优先保留 summariesObj 中的原始键以兼容 RPC）
+  // Build a case-insensitive index to merge different-cased keys of the same conversation onto a unique canonical key (preferring the original key in summariesObj for RPC compatibility)
   const mergedSideQuestionParents = { ...(sideQuestionParents || {}) };
   const canonicalIdByLower = new Map();
   const summariesByLower = new Map();
@@ -1937,7 +1938,7 @@ export async function enumerateAndSyncConversations({
     if (!lower) continue;
     const existingCanon = canonicalIdByLower.get(lower);
     if (!existingCanon) {
-      // 标准 UUID 统一收敛为小写键，避免大小写分裂产生双份条目
+      // Converge standard UUIDs to lowercase keys to avoid duplicate entries from case differences
       const normalizedKey = UUID_RE.test(rawCacheKey) ? lower : rawCacheKey;
       if (normalizedKey !== rawCacheKey) {
         const prevVal = getEntry(rawCacheKey);
@@ -1967,7 +1968,7 @@ export async function enumerateAndSyncConversations({
     }
   }
 
-  // 从所有本地缓存会话收集 subagentRefs，确保跨账号切换时历史会话与派生子代理均不丢失
+  // Collect subagentRefs from all locally cached conversations so historical conversations and spawned subagents are never lost across account switches
   for (const [, entry] of listEntries()) {
     for (const ref of entry?.subagentRefs || []) {
       const refCid = String(ref?.cascadeId || '').trim().toLowerCase();
@@ -2139,7 +2140,7 @@ export async function enumerateAndSyncConversations({
             item?.summary,
             localSum?.title,
             cached?.title,
-          ]) || (isSideQuestion ? '旁路提问' : cascadeId.slice(0, 8)),
+          ]) || (isSideQuestion ? 'Side Question' : cascadeId.slice(0, 8)),
         stepCount: modelStepCount,
         rawStepCount: rawSummaryStepCount,
         status: isKilled ? 'IDLE' : item?.status || '',
@@ -2173,7 +2174,7 @@ export async function enumerateAndSyncConversations({
             sqParentInfo?.title,
             localSum?.title,
             cached.title,
-          ]) || (isSideQuestion ? '旁路提问' : cascadeId.slice(0, 8)),
+          ]) || (isSideQuestion ? 'Side Question' : cascadeId.slice(0, 8)),
         stepCount: cachedStepCount,
         rawStepCount: localSum?.stepCount || cached.rawStepCount || cachedStepCount,
         status: localStatus,
@@ -2209,7 +2210,7 @@ export async function enumerateAndSyncConversations({
           pickFirstMeaningfulTitle(cidLower, [
             sqParentInfo?.title,
             localSum?.title,
-          ]) || (isSideQuestion ? '旁路提问' : cascadeId.slice(0, 8)),
+          ]) || (isSideQuestion ? 'Side Question' : cascadeId.slice(0, 8)),
         stepCount: 0,
         rawStepCount: localSum?.stepCount || 0,
         status: localStatus,
@@ -2268,7 +2269,7 @@ export async function enumerateAndSyncConversations({
   }
 
   /**
-   * 检查缓存条目是否缺少最新分解字段（含 10 通道上下文细分字段 `toolResultsTokens`）。
+   * Check whether a cache entry is missing the latest breakdown fields (including the 10-channel context breakdown field `toolResultsTokens`).
    */
   function hasMissingStepFields(cached) {
     if (cached?._stepFlags) {
@@ -2318,7 +2319,7 @@ export async function enumerateAndSyncConversations({
   };
 
   /**
-   * 批量拉取会话轨迹并提取步骤、子代理元数据 (`trajectory.metadata`) 与子代理调用引用 (`invokeSubagent`)。
+   * Fetch conversation trajectories in batches and extract steps, subagent metadata (`trajectory.metadata`), and subagent invocation references (`invokeSubagent`).
    *
    * @param {object[]} targetConvs
    */
@@ -2376,7 +2377,7 @@ export async function enumerateAndSyncConversations({
                     !hasLocalPbFile(diskFilesForEmptyCheck) &&
                     !findTranscriptPath(cidLower)
                   ) {
-                    // 已初始化但确实为 0 步（无 .pb 降级文件、摘要 0 步且无 transcript）的空本地会话，直接归档空缓存避免无意义 RPC 超时
+                    // Empty local conversation that is initialized with 0 steps (no .pb fallback, 0 summary steps, and no transcript); archive empty cache directly to avoid pointless RPC timeouts
                     trajRes = {
                       cascadeId: cidLower,
                       numTotalSteps: 0,
@@ -2451,7 +2452,7 @@ export async function enumerateAndSyncConversations({
             }
             const nextLast = steps[steps.length - 1];
 
-            // 提取轨迹内携带的子代理归属元数据、旁路提问父归属与派生的子代理引用列表
+            // Extract subagent ownership metadata, side-question parent ownership, and spawned subagent reference list carried in the trajectory
             const sqParentInfo = mergedSideQuestionParents[cidLower] || null;
             const extractedMeta = extractTrajectorySubagentMeta(trajRes, conv);
             const detectedSideQuestion = Boolean(
@@ -2485,7 +2486,7 @@ export async function enumerateAndSyncConversations({
                   nonShortTitle(conv.title) ||
                   ''
               ).trim();
-              const cleanSqRole = sqTitle && sqTitle !== '旁路提问' ? sqTitle : '';
+              const cleanSqRole = sqTitle && sqTitle !== 'Side Question' ? sqTitle : '';
               conv.isSideQuestion = true;
               conv.parentConversationId = parentCid;
               const extRoot = String(extractedMeta.rootConversationId || '').trim().toLowerCase();
@@ -2495,10 +2496,10 @@ export async function enumerateAndSyncConversations({
                 (prevConvRoot && prevConvRoot !== cidLower ? prevConvRoot : '') ||
                 parentCid ||
                 '';
-              conv.title = cleanSqRole || '旁路提问';
+              conv.title = cleanSqRole || 'Side Question';
               conv.subagentSpec = {
                 typeName: 'side_question',
-                role: cleanSqRole || '旁路提问',
+                role: cleanSqRole || 'Side Question',
               };
               conv.agentScriptName = '';
               conv.createdTimeMs =
@@ -2760,7 +2761,7 @@ export async function enumerateAndSyncConversations({
               !isRemote &&
               (sqliteProbedEmpty || (!sqliteNotReady && hasLocalPbFile(diskFiles)))
             ) {
-              // 本地 .db 为空壳或会话仅落盘加密 .pb、且连 transcript.jsonl 与 RPC 均无法恢复步骤时，避免顶栏继续虚标原始 step_count
+              // When local .db is an empty shell or only encrypted .pb is on disk and neither transcript.jsonl nor RPC can recover steps, avoid over-reporting raw step_count in the top bar
               conv.stepCount = 0;
             }
             if (
@@ -2837,8 +2838,8 @@ export async function enumerateAndSyncConversations({
     }
   }
 
-  // 阶段 1：拉取常规新增/变更会话，以及摘要列表中尚未提取 subagentRefs 的会话
-  // 旧缓存只补读当前会话的宿主上限，避免重拉全部历史轨迹。
+  // Phase 1: Fetch regular new/changed conversations and conversations in summaries whose subagentRefs have not yet been extracted.
+  // Legacy caches only backfill the host limit for the current conversation to avoid re-fetching all historical trajectories.
   const contextTelemetryCascadeId = reqLower || rawConversations[0]?.cascadeId.toLowerCase();
   const selectedRootId = rawConversations.find(
     (c) => c.cascadeId.toLowerCase() === contextTelemetryCascadeId
@@ -3038,7 +3039,7 @@ export async function enumerateAndSyncConversations({
         return true;
       }
     }
-    // 保留已有效的历史测速，按批补读需要确认原始状态与生成结束时间的旧步骤。
+    // Preserve valid historical speed measurements and incrementally backfill legacy steps that need raw status and generation end-time confirmation.
     const hasIncompleteTiming = cached?._stepFlags
       ? Boolean(cached._stepFlags.hasIncompleteTiming)
       : readStepFieldChecks(cached.steps).hasIncompleteTiming;
@@ -3077,8 +3078,8 @@ export async function enumerateAndSyncConversations({
   await fetchTrajectoryBatch(fetchQueue);
 
   /**
-   * 阶段 2：根据父会话的 `subagentRefs` 将子代理归属关系、角色名称与启动顺序回填至子代理会话，
-   * 支持多层嵌套子代理（主会话 -> 子代理 -> 二级子代理）逐层补拉与归属收敛。
+   * Phase 2: Backfill subagent ownership, role names, and spawn order onto subagent conversations from parent `subagentRefs`,
+   * supporting multi-level nested subagents (root -> subagent -> secondary subagent) with layer-by-layer fetching and ownership convergence.
    */
   async function reconcileParentSubagentRefs() {
     for (let depth = 0; depth < MAX_SUBAGENT_RECONCILE_DEPTH; depth++) {
@@ -3291,7 +3292,7 @@ export async function enumerateAndSyncConversations({
 
   await reconcileParentSubagentRefs();
 
-  // 阶段 3：对剩余尚未标记 subagentRefs 的纯磁盘历史会话每次增量迁移最多 8 个（远端共享整轮背景额度），避免单次轮询阻塞
+  // Phase 3: Incrementally migrate up to 8 remaining disk-only historical conversations without subagentRefs per poll (remote shares the round's background budget) to avoid blocking a single poll
   const legacyBatchCap = isRemote
     ? isRemoteFetchHalted()
       ? 0
@@ -3322,7 +3323,7 @@ export async function enumerateAndSyncConversations({
     await reconcileParentSubagentRefs();
   }
 
-  // 阶段 4：将多层嵌套子代理的 rootConversationId 沿着父链向上收敛至最顶层根会话，防止二级子代理丢失
+  // Phase 4: Converge rootConversationId of multi-level nested subagents upward along the parent chain to the top-level root conversation to prevent losing secondary subagents
   const byId = new Map(rawConversations.map((c) => [c.cascadeId.toLowerCase(), c]));
   for (const conv of rawConversations) {
     if (!conv.isSubagent) continue;
@@ -3361,7 +3362,7 @@ export async function enumerateAndSyncConversations({
     persistCacheIfNeeded({ hasRunningSessions });
   }
 
-  // 确保所有处于 RUNNING 状态的会话（含本轮未触发 RPC 拉取的会话）都同步了最新的实时动作摘要，并剔除已进入 swarm_wait 待命的假运行态
+  // Ensure all RUNNING conversations (including those not fetched via RPC this round) have synced latest live activity summaries, and strip false running states parked on swarm_wait
   for (const conv of rawConversations) {
     if (conv.status === 'CASCADE_RUN_STATUS_RUNNING') {
       if (!conv.liveActivity) {
@@ -3403,7 +3404,7 @@ export async function enumerateAndSyncConversations({
     }
   }
 
-  // 按最终收敛的 rootConversationId 将所有层级的子代理挂载至对应顶层根会话下；孤儿子代理绝不提升为顶层根会话
+  // Attach subagents at all levels under their corresponding top-level root conversation by final converged rootConversationId; orphan subagents are never promoted to top-level root conversations
   const subagentsByRoot = new Map();
   const conversations = [];
 
@@ -3618,7 +3619,7 @@ export async function enumerateAndSyncConversations({
       (a.groupLastModifiedMs || a.lastModifiedMs || 0)
   );
 
-  // 选定当前活跃根会话：若指定了有效 requestedConvId（支持根会话 ID 或子代理 ID）则优先使用，否则取最近修改的根会话
+  // Select the currently active root conversation: prefer a valid requestedConvId (supporting root or subagent ID), otherwise pick the most recently modified root conversation
   const activeConvSummary =
     (reqLower &&
       (conversations.find((c) => c.cascadeId.toLowerCase() === reqLower) ||

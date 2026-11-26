@@ -1,13 +1,13 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 跨 Backend / Frontend / CLI 共用的纯展示阈值、紧凑格式化、第三方配额分池与精确整数缩放规则。
+ * @fileoverview Pure display thresholds, compact formatting, third-party quota pooling, and exact integer scaling rules shared across Backend / Frontend / CLI.
  */
 
 export const THIRD_PARTY_POOL_RE =
   /3p|claude|anthropic|fable|gpt|openai|oss|sonnet|opus|haiku|third[-_\s]?party/i;
 
 /**
- * 判断模型或配额桶文本是否归属第三方模型池（Claude & GPT / OSS / 3P）。
+ * Determine whether a model or quota bucket text belongs to the third-party model pool (Claude & GPT / OSS / 3P).
  *
  * @param {unknown} text
  * @returns {boolean}
@@ -17,7 +17,7 @@ export function isThirdPartyPoolText(text) {
 }
 
 /**
- * 输出速度四档语义色阶分类（`'muted'|'good'|'info'|'warn'|'danger'`）。
+ * Four-tier semantic color classification for output speed (`'muted'|'good'|'info'|'warn'|'danger'`).
  */
 export function classifySpeedTier(tokPerSec) {
   if (tokPerSec == null || !Number.isFinite(Number(tokPerSec)) || Number(tokPerSec) <= 0) {
@@ -31,7 +31,7 @@ export function classifySpeedTier(tokPerSec) {
 }
 
 /**
- * 缓存命中率四档语义色阶分类（`'muted'|'good'|'info'|'warn'|'danger'`）。
+ * Four-tier semantic color classification for cache hit rate (`'muted'|'good'|'info'|'warn'|'danger'`).
  */
 export function classifyCacheTier(cacheHitPct, promptTokens = null) {
   if (cacheHitPct == null || !Number.isFinite(Number(cacheHitPct))) {
@@ -48,7 +48,7 @@ export function classifyCacheTier(cacheHitPct, promptTokens = null) {
 }
 
 /**
- * 单步费用告警色阶分类（`''|'warn'|'danger'`）。
+ * Alert color tier classification for per-step cost (`''|'warn'|'danger'`).
  */
 export function classifyStepCostTier(costUsd) {
   if (costUsd == null || !Number.isFinite(Number(costUsd))) return '';
@@ -59,7 +59,7 @@ export function classifyStepCostTier(costUsd) {
 }
 
 /**
- * 首字延迟告警色阶分类（`'muted'|''|'warn'|'danger'`）。
+ * Alert color tier classification for time-to-first-token (TTFT) latency (`'muted'|''|'warn'|'danger'`).
  */
 export function classifyTtftTier(ttftSec) {
   if (ttftSec == null || !Number.isFinite(Number(ttftSec)) || Number(ttftSec) < 0) {
@@ -110,7 +110,7 @@ function isArgonPoolObject(pool) {
 }
 
 /**
- * 判断当前配额摘要中是否存在独立的 Argon 周限配额池（如 Google AI Pro 账号）。
+ * Determine whether the current quota summary contains an independent Argon weekly quota pool (e.g., Google AI Pro accounts).
  *
  * @param {object|null|undefined} quotas
  * @returns {boolean}
@@ -130,7 +130,7 @@ export function hasArgonWeeklyQuotaPool(quotas) {
 }
 
 /**
- * 解析胶囊指定配额槽位（`quota_auto` / `gemini_5h` / `gemini_weekly` / `argon_weekly` / `claude_5h` / `claude_weekly`）的整数剩余百分比。
+ * Resolve the integer remaining percentage for a specified capsule quota slot (`quota_auto` / `gemini_5h` / `gemini_weekly` / `argon_weekly` / `claude_5h` / `claude_weekly`).
  *
  * @param {object|null|undefined} quotas
  * @param {string} slotKey
@@ -236,8 +236,8 @@ export function resolveCapsuleQuotaSlotPct(quotas, slotKey) {
 }
 
 /**
- * 使用最大余数法（Hamilton 方法）将各非零分桶等比缩放至目标整数总和，
- * 保证 0 值通道绝不被凭空分配余数，且缩放后各分桶之和精确等于 `targetTotal`。
+ * Proportionally scale non-zero buckets to a target integer total using the largest-remainder method (Hamilton method),
+ * ensuring zero-value channels never receive phantom remainders and that the scaled buckets sum exactly to `targetTotal`.
  *
  * @param {Record<string, number>} buckets
  * @param {readonly string[]} keys

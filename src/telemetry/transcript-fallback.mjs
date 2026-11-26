@@ -1,9 +1,9 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 共享的 `transcript.jsonl` / `transcript_full.jsonl` 安全解析与离线模型步骤合成辅助模块。
+ * @fileoverview Shared safe parser for `transcript.jsonl` / `transcript_full.jsonl` and offline model step synthesizer.
  *
- * 供 `local-scanner.mjs` 与 `cli-statusline.mjs` 共用，避免重复维护状态归一化、Token 字段映射
- * 以及超大 `transcript_full.jsonl` 的体积保护逻辑。
+ * Shared by `local-scanner.mjs` and `cli-statusline.mjs` to avoid duplicating status normalization, token field mapping,
+ * and size-guard logic for oversized `transcript_full.jsonl` files.
  */
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -13,7 +13,7 @@ export const TRANSCRIPT_COMPACT_MAX_BYTES = 24 * 1024 * 1024;
 export const TRANSCRIPT_FULL_MAX_BYTES = 12 * 1024 * 1024;
 
 /**
- * 在单个日志目录内优先解析 `transcript.jsonl`，不存在时按体积上限安全回退至 `transcript_full.jsonl`。
+ * Prefer resolving `transcript.jsonl` inside a single logs directory, safely falling back to `transcript_full.jsonl` within the size limit if absent.
  *
  * @param {string} logsDir
  * @param {{ maxFullBytes?: number }} [opts={}]
@@ -40,7 +40,7 @@ export function resolveTranscriptPathInLogsDir(
 }
 
 /**
- * 安全读取并解析 JSONL 格式的 transcript 文件，按文件类型施加体积保护并跳过损坏行。
+ * Safely read and parse a JSONL transcript file, applying file-type-based size limits and skipping corrupted lines.
  *
  * @param {string} transcriptPath
  * @param {{ maxBytes?: number }} [opts={}]
@@ -82,14 +82,14 @@ export function readTranscriptJsonlLines(transcriptPath, { maxBytes } = {}) {
         lines.push(parsed);
       }
     } catch {
-      // 忽略尾部半行或损坏 JSON 行
+      // Ignore trailing partial or malformed JSON lines
     }
   }
   return lines;
 }
 
 /**
- * 将单条含 Token 统计的 transcript JSONL 记录合成为标准轨迹模型步骤对象。
+ * Synthesize a single transcript JSONL record containing token statistics into a standard trajectory model step object.
  *
  * @param {object} line
  * @param {{ stepIndex?: number, deepStep?: object | null }} [opts={}]
@@ -161,7 +161,7 @@ export function synthesizeTranscriptModelStep(line, { stepIndex = 0, deepStep = 
 }
 
 /**
- * 从 `transcript.jsonl`（或受体积保护的 `transcript_full.jsonl`）构建 CLI 状态栏兼容的轨迹载荷。
+ * Build a CLI statusline-compatible trajectory payload from `transcript.jsonl` (or size-guarded `transcript_full.jsonl`).
  *
  * @param {string} transcriptPath
  * @param {string} cascadeId

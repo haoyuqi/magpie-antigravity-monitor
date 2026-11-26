@@ -1,8 +1,8 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 零业务状态依赖的静态资源读取与本机回环请求来源校验工具。
+ * @fileoverview Zero-state static asset reader and localhost loopback request origin validator.
  *
- * 独立于 `./config.mjs` 与 `./api-actions.mjs`，使宿主入口 `main.mjs` 在生产环境下无需加载完整后端图谱与轨迹缓存。
+ * Decoupled from `./config.mjs` and `./api-actions.mjs` so the host entrypoint `main.mjs` does not need to load the full backend graph and trajectory cache in production.
  */
 
 import { readFileSync, promises as fsPromises } from 'node:fs';
@@ -15,7 +15,7 @@ function resolveHttpHelperPanelDir() {
 }
 
 /**
- * 判断输入值是否为非数组普通对象（Plain Object）。
+ * Check whether the input value is a non-array plain object.
  *
  * @param {unknown} v
  * @returns {boolean}
@@ -25,9 +25,9 @@ export function isPlainObject(v) {
 }
 
 /**
- * 异步读取 `sidecars/panel` 目录下的静态资源文件（兼容单元测试同步沙箱）。
+ * Asynchronously read a static asset file under `sidecars/panel` (compatible with synchronous unit-test sandboxes).
  *
- * @param {string} relPath 相对路径
+ * @param {string} relPath Relative path
  * @returns {Promise<string>}
  */
 export const readLocalAsync = async (relPath) => {
@@ -39,8 +39,8 @@ export const readLocalAsync = async (relPath) => {
 };
 
 /**
- * 校验请求是否来自本机回环同端口地址 (`127.0.0.1` / `localhost` / `[::1]`) 或受信 Webview Origin，
- * 阻止跨端口本地服务（如本地其他端口的开发服务器）或跨站 DNS Rebinding 访问 API。
+ * Verify that the request originates from a local loopback address on the same port (`127.0.0.1` / `localhost` / `[::1]`) or a trusted Webview origin,
+ * blocking cross-port local services (such as dev servers on other local ports) or cross-site DNS rebinding attacks against the API.
  *
  * @param {object} req
  * @returns {boolean}

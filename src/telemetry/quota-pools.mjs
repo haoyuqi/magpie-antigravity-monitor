@@ -1,13 +1,13 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 官方配额桶归一化、周期窗口识别与多模型池（Gemini / Argon / Carbon / Claude & GPT）构建。
+ * @fileoverview Official quota bucket normalization, cycle window detection, and multi-model pool construction (Gemini / Argon / Carbon / Claude & GPT).
  *
- * 处理所有已知的 Antigravity 服务端配额形态：
- * - Google AI Ultra：Argon / Carbon 与 Flash 共享同一个 Gemini Models 配额池；
- * - Google AI Pro（形态 1）：`RetrieveUserQuotaSummary` 返回独立的 `Gemini 4 Argon` / `Gemini 4 Carbon` 组；
- * - Google AI Pro（形态 2）：`Gemini Models` 组内嵌套独立的 `argon-weekly` / `carbon-weekly` 桶；
- * - Google AI Pro（形态 3）：`GetUserStatus` 的 `clientModelConfigs.quotaInfo` 为 Argon / Carbon 报告了与标准 Gemini 不同的独立剩余比例；
- * - Proto3 零值省略兼容：当配额耗尽（`remainingFraction === 0`）导致字段被省略且存在尚未过期的有效 `resetTime` 时，正确识别为 0% 剩余（100% 已用）。
+ * Handles all known Antigravity server-side quota shapes:
+ * - Google AI Ultra: Argon / Carbon share the same Gemini Models quota pool with Flash;
+ * - Google AI Pro (Shape 1): `RetrieveUserQuotaSummary` returns separate `Gemini 4 Argon` / `Gemini 4 Carbon` groups;
+ * - Google AI Pro (Shape 2): `Gemini Models` group nests independent `argon-weekly` / `carbon-weekly` buckets;
+ * - Google AI Pro (Shape 3): `GetUserStatus` `clientModelConfigs.quotaInfo` reports an independent remaining fraction for Argon / Carbon distinct from standard Gemini;
+ * - Proto3 zero-value omission compatibility: when quota is exhausted (`remainingFraction === 0`) causing the field to be omitted and a valid unexpired `resetTime` exists, correctly identify it as 0% remaining (100% used).
  */
 
 import { parseIsoMs } from './trajectory-metrics.mjs';
@@ -19,7 +19,7 @@ import {
 } from './model-pricing.mjs';
 
 /**
- * 将原始配额对象（来自 `RetrieveUserQuotaSummary` 桶或 `clientModelConfigs.quotaInfo`）归一化为百分比结构。
+ * Normalizes a raw quota object (from a `RetrieveUserQuotaSummary` bucket or `clientModelConfigs.quotaInfo`) into a percentage structure.
  *
  * @param {object} rawObj
  * @param {number} [nowMs=Date.now()]
@@ -44,7 +44,7 @@ function normalizeQuotaFraction(rawObj, nowMs = Date.now()) {
   ) {
     remFrac = Math.max(0, Math.min(1, Number(rawObj.remainingFraction)));
   } else if (typeof rawObj.resetTime === 'string' && rawObj.resetTime.trim().length > 0) {
-    // Proto3 在配额完全耗尽（0.0）时会省略默认数值字段；仅当 resetTime 是未来有效时间戳时才判定为 0% 剩余
+    // Proto3 omits default numeric fields when quota is completely exhausted (0.0); only treat as 0% remaining if resetTime is a valid future timestamp
     const resetMs = parseIsoMs(rawObj.resetTime);
     if (resetMs > nowMs) {
       remFrac = 0;
@@ -63,11 +63,11 @@ function normalizeQuotaFraction(rawObj, nowMs = Date.now()) {
 }
 
 /**
- * 识别官方配额桶所属的时间窗口类型（`'5h'` 或 `'weekly'`）。
+ * Identifies the time window type (`'5h'` or `'weekly'`) of an official quota bucket.
  *
  * @param {object} bucket
- * @param {number} [_groupBucketCount=1] 所属分组内的桶总数（保留参数签名兼容）
- * @param {number} [nowMs=Date.now()] 当前毫秒时间戳
+ * @param {number} [_groupBucketCount=1] Total bucket count in the parent group (retained for signature compatibility)
+ * @param {number} [nowMs=Date.now()] Current millisecond timestamp
  * @returns {'5h'|'weekly'}
  */
 function classifyOfficialBucketWindow(bucket, _groupBucketCount = 1, nowMs = Date.now()) {
@@ -93,8 +93,8 @@ function classifyOfficialBucketWindow(bucket, _groupBucketCount = 1, nowMs = Dat
 }
 
 /**
- * 根据分组名称、分组描述及桶 ID 识别配额池归属身份（`Gemini` / `Argon` / `Carbon` / `Claude & GPT`）。
- * 优先识别显式的第三方模型池标识，防止分组描述附带 `"separate from Gemini"` 时把第三方池误吞入 Gemini。
+ * Identifies the quota pool identity (`Gemini` / `Argon` / `Carbon` / `Claude & GPT`) from group name, group description, and bucket ID.
+ * Prioritizes explicit third-party model pool identifiers so a group description containing `"separate from Gemini"` does not get misclassified into Gemini.
  *
  * @param {{ groupName?: string, groupDesc?: string, bucketId?: string, bucketName?: string }} params
  * @returns {{ poolKey: string, poolLabel: string, poolName: string }}
@@ -122,7 +122,7 @@ function classifyQuotaPoolIdentity({
     return {
       poolKey: 'Carbon',
       poolLabel: 'Gemini 4 Carbon',
-      poolName: 'Gemini 4 Carbon 模型池',
+      poolName: 'Gemini 4 Carbon Model Pool',
     };
   }
   if (
@@ -136,7 +136,7 @@ function classifyQuotaPoolIdentity({
     return {
       poolKey: 'Argon',
       poolLabel: 'Gemini 4 Argon',
-      poolName: 'Gemini 4 Argon 模型池',
+      poolName: 'Gemini 4 Argon Model Pool',
     };
   }
   if (
@@ -146,26 +146,26 @@ function classifyQuotaPoolIdentity({
     return {
       poolKey: 'Claude & GPT',
       poolLabel: 'Claude & GPT',
-      poolName: 'Claude & GPT 模型池',
+      poolName: 'Claude & GPT Model Pool',
     };
   }
   if (/gemini/i.test(`${primaryText} ${gDesc}`)) {
     return {
       poolKey: 'Gemini',
       poolLabel: 'Gemini',
-      poolName: 'Gemini 模型池',
+      poolName: 'Gemini Model Pool',
     };
   }
   const cleanLabel = (gName || bId || 'Other').trim();
   return {
     poolKey: cleanLabel,
     poolLabel: cleanLabel,
-    poolName: `${cleanLabel} 模型池`,
+    poolName: `${cleanLabel} Model Pool`,
   };
 }
 
 /**
- * 判断两个归一化配额快照是否代表同一个共享配额桶（剩余比例误差 <= 1.5% 且重置时间相差 <= 2 分钟）。
+ * Determines whether two normalized quota snapshots represent the same shared quota bucket (remaining percentage difference <= 1.5% and reset time difference <= 2 minutes).
  *
  * @param {ReturnType<typeof normalizeQuotaFraction>} a
  * @param {ReturnType<typeof normalizeQuotaFraction>} b
@@ -182,11 +182,11 @@ function quotaFractionsMatch(a, b) {
 }
 
 /**
- * 综合 `RetrieveUserQuotaSummary` 与 `GetUserStatus.clientModelConfigs`，构建动态模型映射表、
- * 分模型配额列表及聚合配额池映射表 (`quotaPoolsMap`)。
+ * Combines `RetrieveUserQuotaSummary` and `GetUserStatus.clientModelConfigs` to build the dynamic model map,
+ * per-model quota list, and aggregated quota pool map (`quotaPoolsMap`).
  *
- * @param {object|null} officialQuota 来自 `RetrieveUserQuotaSummary` 的响应体
- * @param {object[]} clientConfigs 来自 `GetUserStatus` 的客户端模型配置数组
+ * @param {object|null} officialQuota Response body from `RetrieveUserQuotaSummary`
+ * @param {object[]} clientConfigs Client model config array from `GetUserStatus`
  * @returns {{
  *   dynamicModelMap: Map<string, object>,
  *   quotaPoolsMap: Map<string, object>,
@@ -245,7 +245,7 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
         if (!builder.bucket5h) {
           builder.bucket5h = entry;
         } else if (!builder.bucketWeekly) {
-          // 当同池两个无显式标签桶都处于 <6h 临近重置期时，按重置时间早晚区分 5h 与周限桶
+          // When two unlabeled buckets in the same pool are both within <6h of reset, distinguish 5h vs weekly by earlier vs later reset time
           const prevResetMs = parseIsoMs(builder.bucket5h.resetTime);
           const nextResetMs = parseIsoMs(entry.resetTime);
           if (prevResetMs > 0 && nextResetMs > 0 && nextResetMs < prevResetMs) {
@@ -261,7 +261,7 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
     }
   }
 
-  // 注册动态模型字典（不把占位符 rawKey 污染进 modelId），并采样 Carbon / Argon 与标准 Gemini 的单模型 quotaInfo
+  // Register the dynamic model dictionary (without polluting modelId with placeholder rawKey), and sample per-model quotaInfo for Carbon / Argon vs standard Gemini
   let sampleCarbonCfgQuota = null;
   let sampleArgonCfgQuota = null;
   let sampleStdGeminiCfgQuota = null;
@@ -287,8 +287,8 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
     }
   }
 
-  // Pro 账号回退检测：若 RetrieveUserQuotaSummary 未单独列出 Argon / Carbon 分组，
-  // 但 GetUserStatus 中 Argon / Carbon 模型的 quotaInfo 与标准 Gemini 明显分离，则合成独立周限池
+  // Pro account fallback detection: if RetrieveUserQuotaSummary did not list separate Argon / Carbon groups,
+  // but GetUserStatus reports clearly distinct quotaInfo for Argon / Carbon vs standard Gemini, synthesize an independent weekly pool
   if (!poolBuilders.has('Argon') && sampleArgonCfgQuota) {
     const geminiBuilder = poolBuilders.get('Gemini');
     const hasGeminiBaseline = Boolean(
@@ -303,7 +303,7 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
       const argonBuilder = ensurePoolBuilder({
         poolKey: 'Argon',
         poolLabel: 'Gemini 4 Argon',
-        poolName: 'Gemini 4 Argon 模型池',
+        poolName: 'Gemini 4 Argon Model Pool',
       });
       argonBuilder.bucketWeekly = {
         ...sampleArgonCfgQuota,
@@ -335,7 +335,7 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
       const carbonBuilder = ensurePoolBuilder({
         poolKey: 'Carbon',
         poolLabel: 'Gemini 4 Carbon',
-        poolName: 'Gemini 4 Carbon 模型池',
+        poolName: 'Gemini 4 Carbon Model Pool',
       });
       carbonBuilder.bucketWeekly = {
         ...sampleCarbonCfgQuota,
@@ -358,12 +358,12 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
     const isGemini = info.family === 'Gemini';
     const targetIdent =
       isCarbon && hasDedicatedCarbonPool
-        ? { poolKey: 'Carbon', poolLabel: 'Gemini 4 Carbon', poolName: 'Gemini 4 Carbon 模型池' }
+        ? { poolKey: 'Carbon', poolLabel: 'Gemini 4 Carbon', poolName: 'Gemini 4 Carbon Model Pool' }
         : isArgon && hasDedicatedArgonPool
-          ? { poolKey: 'Argon', poolLabel: 'Gemini 4 Argon', poolName: 'Gemini 4 Argon 模型池' }
+          ? { poolKey: 'Argon', poolLabel: 'Gemini 4 Argon', poolName: 'Gemini 4 Argon Model Pool' }
           : isGemini
-            ? { poolKey: 'Gemini', poolLabel: 'Gemini', poolName: 'Gemini 模型池' }
-            : { poolKey: 'Claude & GPT', poolLabel: 'Claude & GPT', poolName: 'Claude & GPT 模型池' };
+            ? { poolKey: 'Gemini', poolLabel: 'Gemini', poolName: 'Gemini Model Pool' }
+            : { poolKey: 'Claude & GPT', poolLabel: 'Claude & GPT', poolName: 'Claude & GPT Model Pool' };
 
     const builder = ensurePoolBuilder(targetIdent);
     if (cfg?.label && !builder.models.includes(cfg.label)) {
@@ -404,12 +404,12 @@ export function buildOfficialQuotaPools(officialQuota, clientConfigs = []) {
     });
   }
 
-  // 确保基础的 Gemini 与 Claude & GPT 模型池始终存在
-  ensurePoolBuilder({ poolKey: 'Gemini', poolLabel: 'Gemini', poolName: 'Gemini 模型池' });
+  // Ensure the base Gemini and Claude & GPT model pools always exist
+  ensurePoolBuilder({ poolKey: 'Gemini', poolLabel: 'Gemini', poolName: 'Gemini Model Pool' });
   ensurePoolBuilder({
     poolKey: 'Claude & GPT',
     poolLabel: 'Claude & GPT',
-    poolName: 'Claude & GPT 模型池',
+    poolName: 'Claude & GPT Model Pool',
   });
 
   const quotaPoolsMap = new Map();

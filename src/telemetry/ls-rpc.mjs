@@ -1,14 +1,14 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview Antigravity Language Server Connect RPC 客户端与官方配额摘要缓存。
+ * @fileoverview Antigravity Language Server Connect RPC client and official quota summary cache.
  *
- * 负责：
- * 1. 向本地或 SSH 远端窗口对应的 Language Server 发起带 CSRF 鉴权与超时保护的 Connect RPC 调用 (`callLsRpc`)；
- * 2. 对远端 SSH 端点采用双层传输：
- *    - Tier-1：严格限定回环地址 (`127.0.0.1`/`localhost`/`::1`) 的 HTTP/HTTPS 直连（HTTPS 仅对回环允许宿主自签证书）；
- *    - Tier-2：Tier-1 不可用或鉴权依赖 Electron Partition Cookie / 2.33.0+ 省略 `csrfToken` 时，
- *      自动熔断并回退至窗口内同源 `window.fetch` / `/connect-websocket`（通过 CDP 按需执行）；
- * 3. 拉取并按端点隔离缓存 `RetrieveUserQuotaSummary` 官方实时配额摘要与 `GetAvailableModels` 模型目录。
+ * Responsibilities:
+ * 1. Issue CSRF-authenticated, timeout-protected Connect RPC calls (`callLsRpc`) to the Language Server corresponding to local or SSH remote windows;
+ * 2. Use two-tier transport for remote SSH endpoints:
+ *    - Tier-1: Direct HTTP/HTTPS connection strictly restricted to loopback addresses (`127.0.0.1`/`localhost`/`::1`) (HTTPS allows host self-signed certificates on loopback only);
+ *    - Tier-2: When Tier-1 is unavailable or authentication depends on Electron Partition Cookies / 2.33.0+ omits `csrfToken`,
+ *      automatically trip the circuit breaker and fall back to same-origin `window.fetch` / `/connect-websocket` inside the window (executed on demand via CDP);
+ * 3. Fetch and cache `RetrieveUserQuotaSummary` official real-time quota summaries and the `GetAvailableModels` model catalog, isolated per endpoint.
  */
 
 import { isStrictLoopbackUrl, lsRuntimeEndpoint } from '../runtime/paths.mjs';
@@ -250,7 +250,7 @@ async function callRemoteEndpointLsRpc(endpoint, method, body, timeoutMs) {
       if (isTransportAuthOrRouteMiss) {
         markRemoteEndpointPreferTier2(endpoint);
       } else {
-        // 业务级 4xx（如单个会话已被删除导致的 GetCascadeTrajectory 404）直接上抛，不误触熔断
+        // Rethrow business-level 4xx errors (such as GetCascadeTrajectory 404 when a single session has been deleted) directly without tripping the circuit breaker
         throw tier1Err;
       }
     } catch (err) {
@@ -281,12 +281,12 @@ async function callRemoteEndpointLsRpc(endpoint, method, body, timeoutMs) {
 }
 
 /**
- * 调用本地或远端 SSH `LanguageServerService` 的指定 RPC 方法（本地支持按需发现与宿主重启重连）。
+ * Call a specified RPC method on the local or remote SSH `LanguageServerService` (local supports on-demand discovery and reconnection after host restart).
  *
- * @param {string} method RPC 方法名（如 `'GetUserStatus'`、`'GetCascadeTrajectory'`）
- * @param {object} [body={}] 请求 JSON 载荷
- * @param {number} [timeoutMs=5000] 超时时间（毫秒）
- * @param {object|null} [endpoint=null] 可选远端端点对象；缺省调用本机 LS
+ * @param {string} method RPC method name (e.g. `'GetUserStatus'`, `'GetCascadeTrajectory'`)
+ * @param {object} [body={}] Request JSON payload
+ * @param {number} [timeoutMs=5000] Timeout in milliseconds
+ * @param {object|null} [endpoint=null] Optional remote endpoint object; defaults to local LS
  * @returns {Promise<object>}
  */
 export async function callLsRpc(method, body = {}, timeoutMs = 5000, endpoint = null) {
@@ -364,11 +364,11 @@ export async function callLsRpc(method, body = {}, timeoutMs = 5000, endpoint = 
 }
 
 /**
- * 获取官方实时配额摘要（`RetrieveUserQuotaSummary`），按端点与账号隔离短期缓存。
+ * Fetch the official real-time quota summary (`RetrieveUserQuotaSummary`), short-term cached and isolated per endpoint and account.
  *
- * @param {boolean} [forceRefresh=false] 是否强制穿透本地缓存与失败冷却
- * @param {string} [accountName=''] 发起查询时宿主报告的账号，用于隔离配额缓存
- * @param {object|null} [endpoint=null] 可选远端端点对象
+ * @param {boolean} [forceRefresh=false] Whether to bypass local cache and failure cooldown
+ * @param {string} [accountName=''] Account reported by the host when querying, used to isolate the quota cache
+ * @param {object|null} [endpoint=null] Optional remote endpoint object
  * @returns {Promise<{data: object|null, fetchedAtMs: number, isStale: boolean, refreshFailed: boolean, error: string|null, fromCache: boolean}>}
  */
 export async function getOfficialQuotaSummary(forceRefresh = false, accountName = '', endpoint = null) {

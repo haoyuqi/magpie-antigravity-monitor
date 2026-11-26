@@ -1,13 +1,13 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 实验性配额预占估算器（`quota-reservation.mjs`）。
+ * @fileoverview Experimental quota reservation estimator (`quota-reservation.mjs`).
  *
- * 基于分布式配额租约（Per-Bucket / Per-Session Quota Lease）的行为特征：
- * 1. 5h 桶及周限桶各自独立追踪（支持错档触发）；
- * 2. 多高消耗会话并发时支持多笔租约线性叠加（如 0.5% / 1.0% / 2.0%+）；
- * 3. 在租约期内继续产生真实消耗时按单桶换算率扣减可退差额；
- * 4. 上游退还租约（同周期内 officialUsedPct 下降）时按 FIFO 精准核销并反向校准单桶费率；
- * 5. 轻量 O(1) 状态机 + DATA_DIR 节流持久化（保留最近 500 条事件，重启及热更新后自动恢复）。
+ * Behavioral characteristics based on distributed quota leases (Per-Bucket / Per-Session Quota Lease):
+ * 1. 5h and weekly buckets are tracked independently (supporting staggered triggers);
+ * 2. Concurrent high-usage sessions support linear stacking of multiple leases (e.g. 0.5% / 1.0% / 2.0%+);
+ * 3. When real consumption continues during a lease period, the refundable balance is deducted at the per-bucket conversion rate;
+ * 4. When upstream refunds a lease (officialUsedPct decreases within the same cycle), it settles in FIFO order and reverse-calibrates the per-bucket rate;
+ * 5. Lightweight O(1) state machine + throttled DATA_DIR persistence (retaining the latest 500 events, auto-restoring after restarts and hot reloads).
  */
 
 import { parseIsoMs } from './trajectory-metrics.mjs';
@@ -254,7 +254,7 @@ function qrUpdateSlopeSamples(st, netUsedPct, safeCost, safeCalls, safeUnpriced 
   ) {
     arr.push({ u: +u.toFixed(4), c: +c.toFixed(6), n: calls, ...(unp > 0 ? { unp } : {}) });
     if (arr.length > QR_MAX_SLOPE_SAMPLES) {
-      // 保留首锚点 arr[0] 以维持整周期跨度，淘汰最早的中间点
+      // Keep the first anchor arr[0] to preserve the full cycle span, evicting the oldest intermediate point
       arr.splice(1, arr.length - QR_MAX_SLOPE_SAMPLES);
     }
   }
@@ -340,7 +340,7 @@ function qrRecordRateSample(state, sampleRate) {
         state.rateOutlierBuf.push(clamped);
       }
       if (state.rateOutlierBuf.length >= QR_RATE_DRIFT_STREAK) {
-        // 连续多次干净同向偏移（如账号套餐倍率变化），重置中位数窗口
+        // Multiple consecutive clean same-direction shifts (e.g., account plan multiplier change); reset the median window
         state.rateWindow = state.rateOutlierBuf.slice(-QR_RATE_WINDOW_SIZE);
         state.rateOutlierSide = 0;
         state.rateOutlierBuf = [];
@@ -367,7 +367,7 @@ function qrResolveEffectiveRate(state, officialUsedPct, cycleCostUsd) {
   if (state.ratePctPerUsd !== null && Number.isFinite(state.ratePctPerUsd)) {
     return state.ratePctPerUsd;
   }
-  // 一旦检测到同池存在家庭组 / 其他设备外部消耗或未计价调用，禁止用累计总占比 / 本机花费做冷启动反推
+  // Once external consumption from family group / other devices or unpriced calls are detected in the same pool, disable cold-start back-calculation from cumulative percentage / local spend
   if (
     !state.hasExternalUsage &&
     (state.lastUnpricedCalls || 0) === 0 &&
@@ -875,7 +875,7 @@ function qrReconcileExternalUsageBound(st, safeUsed, safeCost, safeModelCosts, n
   const localExpectedPct = isCalibrated
     ? qrEstimateModelWeightedPct(st, safeModelCosts, safeCost, st.ratePctPerUsd)
     : 0;
-  // 本周期累计外部消耗物理上不可能超过（官方累计已用 - 活跃租约 - 已校准本机保守下界）
+  // Cumulative external consumption in this cycle physically cannot exceed (official cumulative used - active leases - calibrated local conservative floor)
   const localConservativeFloor = localExpectedPct * 0.9;
   const maxExternalBound = Math.max(0, safeUsed - leaseSum - localConservativeFloor);
   let mutated = false;
@@ -972,7 +972,7 @@ function qrSanitizePersistedBucket(raw, { preserveRate = true } = {}) {
 }
 
 /**
- * 创建独立的配额预占状态追踪器（支持可选持久化钩子及单元测试隔离）。
+ * Creates an isolated quota reservation state tracker (with optional persistence hooks and unit-test isolation).
  *
  * @param {{ loadState?: () => object|null, saveState?: (payload: object) => void }} [options]
  */
@@ -994,7 +994,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       if (persisted.buckets && typeof persisted.buckets === 'object') {
         const entries = Object.entries(persisted.buckets).slice(-QR_MAX_TRACKED_BUCKETS);
         for (const [k, rawSt] of entries) {
-          // 从 v1 升级到 v2 时丢弃旧版可能被双副本抖动污染的 EMA 费率，保留历史事件日志
+          // When upgrading from v1 to v2, discard old EMA rates that may have been polluted by dual-replica jitter, while keeping the historical event log
           const clean = qrSanitizePersistedBucket(rawSt, { preserveRate: isCurrentSchema });
           if (k && clean) {
             buckets.set(k, clean);
@@ -1008,7 +1008,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         eventLog.push(...recent);
       }
     } catch {
-      // 忽略损坏的持久化状态，自动从空白基线重建
+      // Ignore corrupted persisted state and automatically rebuild from a blank baseline
     }
   }
 
@@ -1107,7 +1107,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
     try {
       saveState(serializeState(nowMs));
     } catch {
-      // 持久化失败不影响内存态主流程
+      // Persistence failure does not affect the main in-memory flow
     }
   }
 
@@ -1233,7 +1233,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       );
     };
 
-    // 1. 周期重置检测：静默忽略 0% 空闲池的滑动重置时间漂移；真正跨周期时清空租约但保留单桶及单模型费率
+    // 1. Cycle reset detection: silently ignore sliding reset-time drift on 0% idle pools; on a true cycle boundary, clear leases while preserving per-bucket and per-model rates
     const resetShifted =
       safeResetMs > 0 &&
       st.resetTimeMs > 0 &&
@@ -1295,7 +1295,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       return out;
     }
 
-    // 2. 首次观测：建立基线并按当前周期已有消耗做冷启动费率估计（检测到外部消耗或未计价调用时跳过累计比值反推）
+    // 2. First observation: establish baseline and estimate cold-start rate from existing cycle consumption (skip cumulative ratio back-calculation if external consumption or unpriced calls are detected)
     if (st.lastOfficialUsedPct === null) {
       st.resetTimeMs = safeResetMs;
       st.lastQuotaTs = safeFetchTs;
@@ -1336,7 +1336,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       st.resetTimeMs = safeResetMs;
     }
 
-    // 3. 同一份缓存配额响应：跳过重复差分，仅补齐缺失的单模型基线并检查租约超时清理
+    // 3. Same cached quota response: skip duplicate diffing, only backfill missing per-model baselines and check lease timeout cleanup
     const isFreshSample =
       safeFetchTs !== st.lastQuotaTs || Math.abs(safeUsed - st.lastOfficialUsedPct) > 1e-4;
     if (!isFreshSample) {
@@ -1499,7 +1499,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
     };
 
     if (deltaOfficial <= -QR_REFUND_EPSILON_PCT) {
-      // 4A. 同周期余额回升：区分「静默到期真退还」及「活跃期双副本回落待确认」
+      // 4A. Balance recovery within the same cycle: distinguish between "silent expiration true refund" and "active-period dual-replica drop pending confirmation"
       if (st.activeLeases.length > 0) {
         qrConfirmAllLeases(st.activeLeases);
       }
@@ -1537,7 +1537,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         eventKind = 'drop_pending';
       }
     } else if (st.pendingDrop) {
-      // 4B-Pending. 当前处于回落观察窗内：判断是「弹回高副本」「正常消耗自然越过前高」还是「持续低位确认退还」
+      // 4B-Pending. Currently within drop observation window: determine whether it is "bounced back to high replica", "normal consumption naturally exceeded previous high", or "sustained low level confirming refund"
       const pd = st.pendingDrop;
       const costSinceDrop = Math.max(0, safeCost - pd.preDropCostUsd);
       const expectedSinceDrop = rate !== null ? costSinceDrop * rate : 0;
@@ -1583,7 +1583,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
           eventKind = 'replica_flip';
         }
       } else if (deltaOfficial > 1e-3 && safeUsed >= pd.preDropUsedPct - 1e-3) {
-        // 正常消耗已自然推高至回落前水位以上，立即解除残留观察窗，防止后续真实租约跳变被吞
+        // Normal consumption has naturally pushed past the pre-drop level; clear the residual observation window immediately so subsequent real lease jumps are not swallowed
         st.pendingDrop = null;
         clearPendingCost();
         eventKind = 'normal';
@@ -1617,7 +1617,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         }
       }
     } else if (deltaOfficial > 1e-3) {
-      // 4B. 官方已用比例上升：先筛除退还后多副本回弹及外部/家庭组消耗，再区分租约跳变、租约内消费及常规消耗
+      // 4B. Official used percentage increased: filter out post-refund multi-replica bounces and external/family-group consumption first, then distinguish lease jumps, in-lease consumption, and normal consumption
       const isPostRefundReplicaBounce =
         !forceExternalJump &&
         !hasLocalPoolActivity &&
@@ -1668,7 +1668,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         }
         eventKind = isTentative ? 'lease_tentative' : 'lease';
       } else if (isSignificantShortfall) {
-        // 租约期内出现明显低于预期的官方增量：佐证租约存在并把显著缺口计入当前租约内消费
+        // Official increment significantly lower than expected during lease period: corroborates the lease and counts the significant shortfall as in-lease consumption
         qrConfirmAllLeases(st.activeLeases);
         qrConsumeLeasesFifo(st.activeLeases, shortfall);
         for (let i = 0; i < st.activeLeases.length; i += 1) {
@@ -1676,7 +1676,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         }
         eventKind = 'consume';
       } else {
-        // 检查未经佐证的疑似租约：若本机单会话持续按 1:1 实扣且无吸收/无回落，说明更可能是外部消耗，快速核销
+        // Check uncorroborated suspected leases: if the local single session keeps deducting 1:1 with no absorption or drop, it is more likely external consumption; settle quickly
         let rejectedLease = false;
         if (
           st.activeLeases.length > 0 &&
@@ -1716,7 +1716,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
           deltaOfficial > 0.005 &&
           deltaOfficial < QR_MIN_JUMP_EXCESS_PCT
         ) {
-          // 纯净未租约且无近期副本抖动的单步消耗：进入滚动中位数费率校准池；纯单模型步同步校准该模型费率
+          // Clean unleased single-step consumption without recent replica jitter: feed into rolling median rate calibration pool; pure single-model steps also calibrate that model's rate
           qrRecordRateSample(st, deltaOfficial / rawDeltaCost);
           if (isPureSingleModelStep) {
             const mr = qrGetOrCreateModelRate(st, dominantModelKey, nowMs);
@@ -1728,7 +1728,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       }
       clearPendingCost();
     } else if (rawDeltaCost > 0) {
-      // 4C. 官方已用比例持平但本地产生真实消耗：先缓冲短期记账延迟，跨过延迟窗仍持平再扣减租约
+      // 4C. Official used percentage is flat while local real consumption occurred: buffer short-term accounting delay first, and deduct from lease if still flat after the delay window
       const hasBufferedLeaseCost = st.pendingCostUsd > 0 && st.pendingCostSinceMs > 0;
       if (st.activeLeases.length > 0) {
         const accCost = rawDeltaCost + (hasBufferedLeaseCost ? st.pendingCostUsd : 0);
@@ -1762,7 +1762,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
           eventKind = 'lag_pending';
         }
       } else {
-        // 尚未租约：暂存短时待配对成本，吸收 10~30s 记账延迟或小额步长累积
+        // Not yet leased: temporarily hold short-term pending cost to absorb 10-30s accounting delay or small-step accumulation
         st.pendingCostUsd = effectiveDeltaCost;
         st.pendingCostAtMs = nowMs;
         st.pendingCostSinceMs =
@@ -1776,7 +1776,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
       st.pendingCostSinceMs > 0 &&
       nowMs - st.pendingCostSinceMs >= QR_CONSUME_LAG_GRACE_MS
     ) {
-      // 4C-2. 无新增花费但已跨过 25s 延迟观察窗且官方仍原地踏步：确认此前缓冲成本已在租约内消化
+      // 4C-2. No new spend, but the 25s delay observation window has elapsed and official usage is still flat: confirm that previously buffered cost was absorbed within the lease
       qrConfirmAllLeases(st.activeLeases);
       const consumedPct = qrEstimateModelWeightedPct(
         st,
@@ -1804,7 +1804,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
     st.lastModelCostsUsd = safeModelCosts;
     st.lastUnpricedCalls = safeUnpriced;
 
-    // 5. 租约 TTL 超时兜底（租约本身超过 60 分钟无实质扣减或满 90 分钟自动清理）
+    // 5. Lease TTL timeout fallback (leases with no substantial deduction for over 60 minutes or reaching 90 minutes are automatically cleaned up)
     const beforePrune = st.activeLeases.length;
     qrPruneExpiredLeases(st, nowMs);
     const prunedExpiredLeases = beforePrune > st.activeLeases.length;
@@ -1900,7 +1900,7 @@ export function createQuotaReservationTracker({ loadState = null, saveState = nu
         const peerExtTs5h = Number(prevWkSt?.lastExternalUsageAtMs) || 0;
         const peerExtTsWk = Number(prev5hSt?.lastExternalUsageAtMs) || 0;
 
-        // 第 2 层：同一快照下 5h / 周限按已校准费率等比同涨 -> 判定为同一笔家庭组/外部真实消耗而非租约
+        // Layer 2: 5h / weekly limits rise proportionally at calibrated rates in the same snapshot -> classify as the same family-group/external real consumption rather than a lease
         const isProportionalExternal =
           used5hExact !== null && usedWkExact !== null
             ? qrDetectProportionalExternalJump(
@@ -2083,21 +2083,21 @@ const defaultQuotaReservationTracker = createQuotaReservationTracker({
 });
 
 /**
- * 使用全局默认追踪器为 `quotaPoolsMap` 中的所有配额池刷新 5h 及周限的实验性预占估算字段。
+ * Refreshes experimental reservation estimation fields for both 5h and weekly limits across all quota pools in `quotaPoolsMap` using the global default tracker.
  */
 export function updatePoolQuotaReservationEstimates(params) {
   return defaultQuotaReservationTracker.updatePools(params);
 }
 
 /**
- * 获取当前内存中的配额预占观测日志快照（供「其他 → 试验性功能」复制到剪贴板）。
+ * Gets a snapshot of the in-memory quota reservation observation log (for copying to clipboard in "Other -> Experimental Features").
  */
 export function getQuotaReservationLogSnapshot() {
   return defaultQuotaReservationTracker.getLogSnapshot();
 }
 
 /**
- * 清空全局默认配额预占状态（供测试隔离使用）。
+ * Clears the global default quota reservation state (for test isolation).
  */
 export function resetQuotaReservationState() {
   defaultQuotaReservationTracker.reset();

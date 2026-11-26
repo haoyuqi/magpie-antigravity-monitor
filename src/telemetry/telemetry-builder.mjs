@@ -1,13 +1,13 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 遥测载荷组装器与并发请求合并入口。
+ * @fileoverview Telemetry payload assembler and in-flight request deduplication entry point.
  *
- * 将遥测构建拆解为清晰的子阶段：
- * 1. 拉取用户状态、轨迹摘要与官方实时配额摘要（含账号切换缓存校验）；
- * 2. 调用 `buildOfficialQuotaPools` 构建动态模型映射与多模型配额池；
- * 3. 调用 `enumerateAndSyncConversations` 枚举会话并增量更新轨迹缓存；
- * 4. 调用 `enrichActiveConversationSteps` 与 `extractActiveContextTelemetry` 计算当前活跃会话指标与 10 通道上下文拆解；
- * 5. 调用 `aggregateMultiWindowUsage` 完成全量多窗口聚合，并组装精简的前端遥测 JSON。
+ * Splits telemetry construction into clear sub-stages:
+ * 1. Fetch user status, trajectory summaries, and official live quota summary (with account-switch cache validation);
+ * 2. Call `buildOfficialQuotaPools` to build the dynamic model map and multi-model quota pools;
+ * 3. Call `enumerateAndSyncConversations` to enumerate conversations and incrementally update the trajectory cache;
+ * 4. Call `enrichActiveConversationSteps` and `extractActiveContextTelemetry` to compute active conversation metrics and the 10-channel context breakdown;
+ * 5. Call `aggregateMultiWindowUsage` to complete multi-window aggregation and assemble the compact frontend telemetry JSON.
  */
 
 import { isDeepStrictEqual } from 'node:util';
@@ -149,7 +149,7 @@ function readTrajectoryModelFacts(steps) {
   return result;
 }
 
-/** 合并各会话的上游模型与上下文上限，步骤数组更新后重新提取对应会话的数据。 */
+/** Merge upstream models and context limits across conversations; re-extract data for a conversation after its steps array updates. */
 function buildKnownUpstreamModelMap(contextLimits, cacheStore = null) {
   const store = cacheStore || getEndpointCacheStore(null);
   const knownUpstreamByModelKey = new Map();
@@ -185,13 +185,13 @@ function buildKnownUpstreamModelMap(contextLimits, cacheStore = null) {
 }
 
 /**
- * 为当前活跃会话的步骤补充模型标签、上游响应模型、单步费用、缓存命中率与生成速率指标，
- * 并剔除前端未使用的冗余诊断字段以减小 JSON 体积。
+ * Enrich active conversation steps with model labels, upstream response models, per-step cost,
+ * cache hit rate, and generation speed metrics, while stripping unused diagnostic fields to reduce JSON size.
  *
- * @param {object[]} activeSteps 当前会话的原始缓存步骤
- * @param {ReturnType<typeof createStepModelResolver>} resolveStepModel 模型身份与价格解析器
- * @param {Map<string, string>} sharedUpstreamMap 预先构建的已知上游模型映射表
- * @param {object} agentFields 步骤所属代理的标签和标识
+ * @param {object[]} activeSteps Raw cached steps of the active conversation
+ * @param {ReturnType<typeof createStepModelResolver>} resolveStepModel Model identity and pricing resolver
+ * @param {Map<string, string>} sharedUpstreamMap Pre-built map of known upstream models
+ * @param {object} agentFields Label and identifier fields of the agent owning the steps
  */
 function enrichActiveConversationSteps(
   activeSteps,
@@ -247,7 +247,7 @@ function enrichActiveConversationSteps(
       (mInfo.modelId && mInfo.modelId !== 'unknown' ? mInfo.modelId : mInfo.shortName);
     const annotatedUpstreamModel = formatUpstreamModelId(rawUpstreamModel, mInfo);
     const modelUpstream = st.isCompactionStep
-      ? `${annotatedUpstreamModel}·压缩`
+      ? `${annotatedUpstreamModel} · Compact`
       : annotatedUpstreamModel;
 
     const {
@@ -265,8 +265,8 @@ function enrichActiveConversationSteps(
       baseModelLabel: mInfo.label,
       baseModelShort: mInfo.shortName,
       modelUpstream,
-      modelLabel: st.isCompactionStep ? `${mInfo.label} [自动压缩]` : mInfo.label,
-      modelShort: st.isCompactionStep ? `${mInfo.shortName}·压缩` : mInfo.shortName,
+      modelLabel: st.isCompactionStep ? `${mInfo.label} [Auto-compact]` : mInfo.label,
+      modelShort: st.isCompactionStep ? `${mInfo.shortName} · Compact` : mInfo.shortName,
       family: mInfo.family,
       tokPerSec: roundMetric(tokPerSec),
       selectedSpeedReason: metric.reason,
@@ -281,7 +281,7 @@ function enrichActiveConversationSteps(
     };
   });
 
-  // 关联每轮用户提问摘要与最新轮次标识，供步骤表极简导轨与气泡展示
+  // Associate per-turn user prompt summary and latest-turn flag for the minimal turn rail and bubble display in the step table
   let maxTurnIndex = 0;
   const promptByTurn = new Map();
   const mediaByTurn = new Map();
@@ -442,15 +442,16 @@ function resolveCompactionSummaryTokens(compactionStep) {
 }
 
 /**
- * 从当前活跃会话的最新步骤提取上下文 10 通道拆解、自动压缩水位与缓存命中率。
+ * Extract the 10-channel context breakdown, auto-compaction watermark, and cache hit rate
+ * from the latest steps of the active conversation.
  *
- * `chatStartMetadata.contextWindowMetadata` 记录在步骤请求发送前且基于宿主离线估算器：
- * 1. 先按该步模型 API 真实计费输入（`inputTokens + cacheReadTokens`）对请求前 10 通道做等比整数对齐，消除离线估算偏差；
- * 2. 再将该步自身新生成的输出（`outputTokens`）补入 `assistantTokens`，并滚动推进后续无独立拆解的步骤，
- *    使上下文窗口总占用与调用明细表的单步 `contextTokens` 严格一致；
- * 3. 当末尾或最近边界为上下文压缩步骤（`isCompactionStep`）且压缩后尚未产生新的 `contextBreakdown` 时，
- *    继承压缩前最近一次拆解中的 5 个会话静态通道（`systemPrompt` / `systemTools` / `mcpTools` / `skills` / `userRules`），
- *    清空已被折叠的历史对话通道，并将压缩步生成的摘要正文计入 `checkpointTokens`，避免误把压缩前全量输入当作压缩后水位。
+ * `chatStartMetadata.contextWindowMetadata` is recorded before the step request is sent and relies on the host's offline estimator:
+ * 1. Proportionally integer-align the 10 pre-request channels to the step's actual billed API input (`inputTokens + cacheReadTokens`) to eliminate offline estimation drift;
+ * 2. Add the step's newly generated output (`outputTokens`) to `assistantTokens` and roll forward subsequent steps without independent breakdowns,
+ *    keeping total context window usage strictly consistent with per-step `contextTokens` in the call details table;
+ * 3. When the tail or nearest boundary is a context compaction step (`isCompactionStep`) and no new `contextBreakdown` has been produced yet,
+ *    inherit the 5 static session channels (`systemPrompt` / `systemTools` / `mcpTools` / `skills` / `userRules`) from the latest pre-compaction breakdown,
+ *    clear collapsed historical conversation channels, and count the compaction summary into `checkpointTokens` to avoid mistaking pre-compaction full input for the post-compaction watermark.
  *
  * @param {object[]} enrichedActiveSteps
  * @param {object|null} latestEnriched
@@ -492,7 +493,7 @@ function extractActiveContextTelemetry(
       const bdPromptTokens =
         Number(bdStep?.inputTokens || 0) + Number(bdStep?.cacheReadTokens || 0);
       const bdOutTokens = resolveStepOutputTokens(bdStep);
-      // 仅当模型 API 返回了完整的请求级输入（排除省略 cacheReadTokens 的残缺网关或极小合成桩数据）时对齐至真实分词口径
+      // Align to real tokenized counts only when the model API returned full request-level input (excluding incomplete gateways omitting cacheReadTokens or tiny synthetic stubs)
       if (bdPromptTokens >= rawBreakdownTotal * 0.5) {
         channels = scaleBucketsExact(channels, CONTEXT_CHANNEL_KEYS, bdPromptTokens);
         channels.assistant += bdOutTokens;
@@ -577,8 +578,8 @@ function extractActiveContextTelemetry(
       }
     }
   } else if (enrichedActiveSteps.length > 0) {
-    // 当宿主回退或历史裁剪导致全部步骤均无 `contextBreakdown` 且未发生过压缩时，
-    // 基于缓存的 5 通道静态基线（如有）和各步真实计费增量重建上下文通道，避免进度条和 10 项图例全归零。
+    // When host fallback or history trimming leaves all steps without `contextBreakdown` and no compaction occurred,
+    // rebuild context channels from the cached 5-channel static baseline (if any) and per-step billed deltas so the progress bar and 10-item legend don't zero out.
     let runningTotal = 0;
     let seededInitial = false;
     for (let m = 0; m < enrichedActiveSteps.length; m++) {
@@ -781,7 +782,7 @@ function prepareAgentSteps(
     ),
     modelBreakdown: buildScopedModelBreakdown(taggedSteps, resolveStepModel),
   };
-  // 按 rawSteps 数组引用缓存各代理（含多代理子代理）步骤富化结果，步骤变更后由 WeakMap 自动淘汰。
+  // Cache step enrichment results per agent (including multi-agent subagents) by rawSteps array reference; automatically evicted by WeakMap when steps change.
   if (canCache) {
     agentStepPrepCache.set(rawSteps, {
       agentFields,
@@ -797,7 +798,7 @@ function prepareAgentSteps(
 }
 
 /**
- * 构建单个代理（主代理或子代理）的标准遥测单元对象。
+ * Build a standard telemetry unit object for a single agent (main agent or subagent).
  */
 export function buildAgentUnitTelemetry({
   agentId,
@@ -905,12 +906,12 @@ export function buildAgentUnitTelemetry({
       hasKnownModel: Boolean(enrichedRes.latestEnriched?.hasKnownModel),
       activeBaseModelShort: enrichedRes.latestEnriched?.baseModelShort || '',
       activeBaseModelLabel: enrichedRes.latestEnriched?.baseModelLabel || '',
-      activeModelShort: enrichedRes.latestEnriched?.modelShort || '模型未知',
-      activeModelLabel: enrichedRes.latestEnriched?.modelLabel || '模型未知',
+      activeModelShort: enrichedRes.latestEnriched?.modelShort || 'Unknown model',
+      activeModelLabel: enrichedRes.latestEnriched?.modelLabel || 'Unknown model',
       activeModelUpstream:
         enrichedRes.latestEnriched?.modelUpstream ||
         enrichedRes.latestEnriched?.modelShort ||
-        '模型未知',
+        'Unknown model',
       context: ctxRes.context,
       ...(includeRecentSteps ? { recentSteps } : {}),
       modelBreakdown,
@@ -1012,17 +1013,16 @@ function classifySubagentDisplayMeta(subSum, subEntry, idx, counters) {
     sideIndex = ++counters.side;
     agentKind = 'side_question';
     agentOrdinal = sideIndex;
-    shortLabel = `旁路提问 #${sideIndex}`;
-    badgeText = `旁${sideIndex}`;
+    shortLabel = `Side Q #${sideIndex}`;
+    badgeText = `Q${sideIndex}`;
     const cleanSideRole =
       rawRole &&
-      rawRole !== '旁路提问' &&
       rawRole !== 'Side Question' &&
       rawRole !== 'side_question'
         ? rawRole
         : '';
     customRole = cleanSideRole;
-    roleLabel = cleanSideRole || '旁路提问';
+    roleLabel = cleanSideRole || 'Side Question';
     runningRole = cleanSideRole || shortLabel;
     typeName = 'side_question';
     agentLabel = cleanSideRole ? `${shortLabel} · ${cleanSideRole}` : shortLabel;
@@ -1032,9 +1032,9 @@ function classifySubagentDisplayMeta(subSum, subEntry, idx, counters) {
     agentOrdinal = swOrd;
     const memberTag = parsedSwarm.memberName ? `@${parsedSwarm.memberName}` : '';
     customRole = memberTag;
-    shortLabel = `蜂群 #${swOrd}`;
-    badgeText = `蜂${swOrd}`;
-    roleLabel = memberTag || '蜂群';
+    shortLabel = `Swarm #${swOrd}`;
+    badgeText = `W${swOrd}`;
+    roleLabel = memberTag || 'Swarm';
     runningRole = memberTag || shortLabel;
     typeName = 'worker';
     agentLabel = memberTag ? `${shortLabel} · ${memberTag}` : shortLabel;
@@ -1044,10 +1044,10 @@ function classifySubagentDisplayMeta(subSum, subEntry, idx, counters) {
     const subOrd = ++counters.normal;
     agentKind = 'subagent';
     agentOrdinal = subOrd;
-    customRole = rawRole && rawRole !== '子代理' && rawRole !== 'Subagent' ? rawRole : '';
-    shortLabel = `子代理 #${subOrd}`;
-    badgeText = `子${subOrd}`;
-    roleLabel = rawRole || '子代理';
+    customRole = rawRole && rawRole !== 'Subagent' ? rawRole : '';
+    shortLabel = `Subagent #${subOrd}`;
+    badgeText = `S${subOrd}`;
+    roleLabel = rawRole || 'Subagent';
     runningRole = rawRole || shortLabel;
     typeName = subSpec?.typeName || '';
     agentLabel = rawRole ? `${shortLabel} · ${rawRole}` : shortLabel;
@@ -1164,11 +1164,11 @@ function buildActiveConversationAssembly({
     cascadeId: activeCascadeId,
     isMain: true,
     index: 0,
-    shortLabel: '主代理',
-    badgeText: '主',
-    role: '主代理',
+    shortLabel: 'Main Agent',
+    badgeText: 'M',
+    role: 'Main Agent',
     typeName: 'root',
-    agentLabel: '主代理',
+    agentLabel: 'Main Agent',
     status: activeConvSummary?.status || 'IDLE',
     rawSteps: activeSteps,
     fallbackStaticContext: activeEntry?.lastKnownStaticContext || null,
@@ -1290,7 +1290,7 @@ function buildActiveConversationAssembly({
         (a.stepIndex || 0) - (b.stepIndex || 0)
     );
 
-    // 在多代理汇总视图下，将并行交错的子代理步骤按时间归入对应的主会话用户轮次，避免导轨被交错步骤切碎
+    // In multi-agent combined view, assign interleaved subagent steps chronologically to the corresponding main-session user turn so the turn rail is not fragmented
     const mainTurnByIdx = new Map();
     let maxRootTurn = 0;
     for (const mSt of mainStepsForFamily) {
@@ -1369,7 +1369,7 @@ function buildActiveConversationAssembly({
             .sort((a, b) => (b.lastModifiedMs || 0) - (a.lastModifiedMs || 0))[0] ||
           latestActiveAgent;
 
-    // 汇总视图与自动跟随上下文始终锁定主线（主代理与常规子代理），防止旁路提问抽屉篡改主会话 10 通道上下文水位
+    // Combined view and auto-follow context always stay locked to the mainline (main agent and regular subagents) to prevent side-question drawers from altering the main session's 10-channel context watermark
     const mainlineAgents = allAgents.filter((a) => !a.isSideQuestion);
     const activeMainlineAgent = !latestActiveAgent.isSideQuestion
       ? latestActiveAgent
@@ -1388,17 +1388,17 @@ function buildActiveConversationAssembly({
         mainAgentTelemetry;
 
     const roleSummaryParts = [];
-    if (subCounters.swarm > 0) roleSummaryParts.push(`${subCounters.swarm} 蜂群`);
-    if (subCounters.normal > 0) roleSummaryParts.push(`${subCounters.normal} 子代理`);
+    if (subCounters.swarm > 0) roleSummaryParts.push(`${subCounters.swarm} Swarm`);
+    if (subCounters.normal > 0) roleSummaryParts.push(`${subCounters.normal} Subagent`);
     if (subCounters.side > 0) {
       roleSummaryParts.push(
-        roleSummaryParts.length > 0 ? `${subCounters.side} 旁问` : `${subCounters.side} 旁路提问`
+        roleSummaryParts.length > 0 ? `${subCounters.side} Side Q` : `${subCounters.side} Side Question`
       );
     }
     const aggregatedRoleLabel =
       roleSummaryParts.length > 0
-        ? `主代理 + ${roleSummaryParts.join(' + ')}`
-        : `主代理 + ${subAgentTelemetries.length} 子代理`;
+        ? `Main Agent + ${roleSummaryParts.join(' + ')}`
+        : `Main Agent + ${subAgentTelemetries.length} Subagent`;
 
     const totalCostUsd = roundSessionCost(totalRawSessionCostUsd);
     const totalUnpricedCalls = allAgents.reduce(
@@ -1447,8 +1447,8 @@ function buildActiveConversationAssembly({
       agentKind: 'all',
       agentOrdinal: 0,
       index: -1,
-      shortLabel: '全部汇总',
-      badgeText: '全部',
+      shortLabel: 'All Combined',
+      badgeText: 'All',
       role: aggregatedRoleLabel,
       typeName: 'all',
       activeAgentId: activeMainlineAgent.agentId,
@@ -1497,7 +1497,7 @@ function buildActiveConversationAssembly({
 
   const activeConversation = {
     cascadeId: activeCascadeId,
-    title: activeConvSummary?.title || '当前会话',
+    title: activeConvSummary?.title || 'Current Session',
     ...(activeConvSummary?.swarmTitle ? { swarmTitle: activeConvSummary.swarmTitle } : {}),
     isRunning: activeConvSummary?.status === 'CASCADE_RUN_STATUS_RUNNING',
     status: activeConvSummary?.status || 'IDLE',
@@ -1534,10 +1534,10 @@ function buildActiveConversationAssembly({
     hasKnownModel: Boolean(latestEnriched?.hasKnownModel),
     activeBaseModelShort: latestEnriched?.baseModelShort || '',
     activeBaseModelLabel: latestEnriched?.baseModelLabel || '',
-    activeModelShort: latestEnriched?.modelShort || '模型未知',
-    activeModelLabel: latestEnriched?.modelLabel || '模型未知',
+    activeModelShort: latestEnriched?.modelShort || 'Unknown model',
+    activeModelLabel: latestEnriched?.modelLabel || 'Unknown model',
     activeModelUpstream:
-      latestEnriched?.modelUpstream || latestEnriched?.modelShort || '模型未知',
+      latestEnriched?.modelUpstream || latestEnriched?.modelShort || 'Unknown model',
     context,
     recentSteps: mainRecentSteps,
     modelBreakdown: mainModelBreakdown,
@@ -1651,17 +1651,17 @@ function buildActivePoolAndWeeklyQuotas({
   const activePoolLabel = familyPoolQuota?.poolLabel || activePoolKey;
   const activePoolQuota = familyPoolQuota || {
     poolKey: activePoolKey,
-    poolLabel: activePoolKey === 'Unknown' ? '未知' : activePoolKey,
+    poolLabel: activePoolKey === 'Unknown' ? 'Unknown' : activePoolKey,
     poolName:
       activePoolKey === 'Carbon'
-        ? 'Gemini 4 Carbon 模型池'
+        ? 'Gemini 4 Carbon Model Pool'
         : activePoolKey === 'Argon'
-          ? 'Gemini 4 Argon 模型池'
+          ? 'Gemini 4 Argon Model Pool'
           : activePoolKey === 'Gemini'
-            ? 'Gemini 模型池'
+            ? 'Gemini Model Pool'
             : activePoolKey === 'Claude & GPT'
-              ? 'Claude & GPT 模型池'
-              : '模型池未知',
+              ? 'Claude & GPT Model Pool'
+              : 'Unknown Model Pool',
     family: activePoolKey,
     isAvailable: Boolean(activeLive5h || activeLiveWeekly),
     has5h: Boolean(activeLive5h),
@@ -1713,8 +1713,8 @@ function buildActivePoolAndWeeklyQuotas({
     isOfficial: useOfficialWeekly,
     poolFamily: activePoolKey,
     title: isCustomWeeklyMode
-      ? '每周限额 (自定义本机)'
-      : `每周限额 (${activePoolLabel && activePoolLabel !== 'Unknown' ? activePoolLabel : '当前'})`,
+      ? 'Weekly Limit (Custom Local)'
+      : `Weekly Limit (${activePoolLabel && activePoolLabel !== 'Unknown' ? activePoolLabel : 'Current'})`,
     calls: isCustomWeeklyMode
       ? weekBucket.calls
       : poolsWeeklySummary
@@ -1748,11 +1748,11 @@ function buildActivePoolAndWeeklyQuotas({
 }
 
 /**
- * 构建完整的前端遥测载荷（核心内部实现，直接供单元测试沙箱调用）。
+ * Build the full frontend telemetry payload (core internal implementation, also invoked directly by the unit test sandbox).
  *
- * @param {string} requestedConvId 请求指定的会话 ID（为空时自动选定最近活跃会话）
- * @param {boolean} [forceQuotaRefresh=false] 是否强制穿透官方配额缓存与失败退避
- * @param {{ range?: string, startMs?: number, endMs?: number, endpoint?: object|null }} [filterOpts={}] 时间范围筛选选项与可选远端端点
+ * @param {string} requestedConvId Requested conversation ID (auto-selects the most recently active conversation when empty)
+ * @param {boolean} [forceQuotaRefresh=false] Whether to bypass official quota cache and failure backoff
+ * @param {{ range?: string, startMs?: number, endMs?: number, endpoint?: object|null }} [filterOpts={}] Time-range filter options and optional remote endpoint
  * @returns {Promise<object>}
  */
 export async function buildTelemetryPayloadInternal(
@@ -1803,7 +1803,7 @@ export async function buildTelemetryPayloadInternal(
   const officialQuota = officialQuotaInfo?.data || null;
   const clientConfigs = userStatus?.cascadeModelConfigData?.clientModelConfigs || [];
 
-  // 1. 构建官方实时配额池与动态模型目录
+  // 1. Build official live quota pools and dynamic model catalog
   const { dynamicModelMap, quotaPoolsMap } = buildOfficialQuotaPools(
     officialQuota,
     clientConfigs
@@ -1811,7 +1811,7 @@ export async function buildTelemetryPayloadInternal(
 
   const resolveStepModel = createStepModelResolver(dynamicModelMap);
 
-  // 3. 计算当前活跃根会话及其子代理的步骤指标、10 通道上下文拆解与按模型汇总
+  // 3. Compute step metrics, 10-channel context breakdown, and per-model breakdown for the active root conversation and its subagents
   const reportedContextLimits = new Map();
   const knownUpstreamByModelKey = buildKnownUpstreamModelMap(reportedContextLimits, cacheStore);
   const activeEntry = findTrajectoryCacheEntry(activeCascadeId, cacheStore, { hydrate: true });
@@ -1836,14 +1836,14 @@ export async function buildTelemetryPayloadInternal(
     cacheStore,
   });
 
-  // 4. 识别当前活跃会话家族绑定的模型池（与 quota-pools.mjs 保持一致，将 Other 第三方模型归入 Claude & GPT）
+  // 4. Identify the model pool bound to the active conversation family (consistent with quota-pools.mjs: classify Other third-party models into Claude & GPT)
   const { activePoolKey, activeLive5h, activeLiveWeekly } = resolveActivePoolKeyFromStep(
     latestFamilyStep,
     quotaPoolsMap
   );
 
-  // 全局账号周期锚点采用稳定的配额池优先级（Gemini -> Argon -> Carbon -> Claude & GPT），
-  // 防止切换不同会话时全局消费统计（consumption.presets.week / 5h）因重置时间偏移而突变
+  // Global account cycle anchors use a stable quota pool priority order (Gemini -> Argon -> Carbon -> Claude & GPT)
+  // to prevent global consumption stats (consumption.presets.week / 5h) from jumping due to reset-time shifts when switching conversations
   let accountFiveHourResetMs = 0;
   let accountWeeklyResetMs = 0;
   for (const pk of POOL_PRIORITY_ORDER) {
@@ -1864,7 +1864,7 @@ export async function buildTelemetryPayloadInternal(
   const isCustomWeeklyMode =
     settings.weeklyLimitMode === 'custom_tokens' || settings.weeklyLimitMode === 'custom_cost';
 
-  // 5. 多时间窗口聚合（预设窗口 + 当前选定窗口 + 趋势 + 月序列 + 来源与模型拆解 + 各配额池独立周期统计）
+  // 5. Multi-window aggregation (preset windows + selected window + trend + monthly series + sources & model breakdown + per-pool cycle stats)
   const {
     usageRevision,
     selectedWindow,
@@ -1958,7 +1958,7 @@ export async function buildTelemetryPayloadInternal(
     nowMs: Date.now(),
   });
 
-  // 6. 组装当前活跃配额池与每周限额视图数据
+  // 6. Assemble active quota pool and weekly limit view data
   const { activePoolQuota, weeklyQuota } = buildActivePoolAndWeeklyQuotas({
     activePoolKey,
     activeLive5h,
@@ -2005,13 +2005,13 @@ export async function buildTelemetryPayloadInternal(
     : isUltraTier
       ? resolvedTierMultiplier || 'Ultra'
       : 'Pro';
-  // Google 上游对 Ultra 订阅的 planStatus.planInfo.planName 仍会返回 "Pro"，按 userTier.id 还原 5x / 20x
+  // Google upstream still returns "Pro" for planStatus.planInfo.planName on Ultra subscriptions; restore 5x / 20x from userTier.id
   const resolvedPlanName = isUltraTier
     ? resolvedTierMultiplier ||
       (rawPlanName && !/^pro$/i.test(rawPlanName) ? rawPlanName : 'Ultra')
     : rawPlanName || inferredPlanFallback;
 
-  // 预计算近期会话与运行中会话的轻量缓存速览指标（零额外 RPC 开销）
+  // Precompute lightweight cached quick-view metrics for recent and running conversations (zero extra RPC overhead)
   const quickStatsMemo = new Map();
   const getConversationQuickStats = (rootConv) => {
     const cidKey = String(rootConv?.cascadeId || '').toLowerCase();
@@ -2100,7 +2100,7 @@ export async function buildTelemetryPayloadInternal(
     return stats;
   };
 
-  // 7. 构建所有正在运行的主进程（根会话）及其子代理缩略状态列表
+  // 7. Build summary status list for all running main processes (root conversations) and their subagents
   const runningConversations = [];
   for (const rootConv of conversations) {
     const isMainRunning = rootConv.status === 'CASCADE_RUN_STATUS_RUNNING';
@@ -2146,7 +2146,7 @@ export async function buildTelemetryPayloadInternal(
                 actionKey: 'swarm_killed',
                 waitingApproval: false,
                 detailKey: '',
-                label: '已终止',
+                label: 'Terminated',
                 detail: '',
                 stepProgress: '',
                 startedAtMs: subModMs,
@@ -2157,7 +2157,7 @@ export async function buildTelemetryPayloadInternal(
                 actionKey: 'swarm_waiting',
                 waitingApproval: false,
                 detailKey: '',
-                label: '待命中',
+                label: 'Standby',
                 detail: '',
                 stepProgress: '',
                 startedAtMs: subModMs,
@@ -2168,7 +2168,7 @@ export async function buildTelemetryPayloadInternal(
               actionKey: 'done',
               waitingApproval: false,
               detailKey: '',
-              label: '已完成',
+              label: 'Completed',
               detail: '',
               stepProgress: '',
               startedAtMs: subModMs,
@@ -2208,7 +2208,7 @@ export async function buildTelemetryPayloadInternal(
       const pendingCustomRole = mainLiveAct.detail || '';
       if (isPendingSwarmSpawn) {
         const pendingSwarmOrd = ++runSwarmIdx;
-        const pendingRole = pendingCustomRole || `蜂群 #${pendingSwarmOrd}`;
+        const pendingRole = pendingCustomRole || `Swarm #${pendingSwarmOrd}`;
         subItems.push({
           cascadeId: `${rootConv.cascadeId}:pending-swarm-${pendingIndex}`,
           index: pendingIndex,
@@ -2216,8 +2216,8 @@ export async function buildTelemetryPayloadInternal(
           agentOrdinal: pendingSwarmOrd,
           customRole: pendingCustomRole,
           swarmState: 'working',
-          badgeText: `蜂${pendingSwarmOrd}`,
-          shortLabel: `蜂群 #${pendingSwarmOrd}`,
+          badgeText: `W${pendingSwarmOrd}`,
+          shortLabel: `Swarm #${pendingSwarmOrd}`,
           role: pendingRole,
           typeName: 'worker',
           isRunning: true,
@@ -2229,7 +2229,7 @@ export async function buildTelemetryPayloadInternal(
             actionKey: 'starting',
             waitingApproval: false,
             detailKey: '',
-            label: '启动中',
+            label: 'Starting',
             detail: '',
             stepProgress: '',
             startedAtMs: mainLiveAct.startedAtMs || 0,
@@ -2238,15 +2238,15 @@ export async function buildTelemetryPayloadInternal(
         });
       } else {
         const pendingNormOrd = ++runNormalSubIdx;
-        const pendingRole = pendingCustomRole || '子代理';
+        const pendingRole = pendingCustomRole || 'Subagent';
         subItems.push({
           cascadeId: `${rootConv.cascadeId}:pending-sub-${pendingIndex}`,
           index: pendingIndex,
           agentKind: 'subagent',
           agentOrdinal: pendingNormOrd,
           customRole: pendingCustomRole,
-          badgeText: `子${pendingNormOrd}`,
-          shortLabel: `子代理 #${pendingNormOrd}`,
+          badgeText: `S${pendingNormOrd}`,
+          shortLabel: `Subagent #${pendingNormOrd}`,
           role: pendingRole,
           typeName: '',
           isRunning: true,
@@ -2258,7 +2258,7 @@ export async function buildTelemetryPayloadInternal(
             actionKey: 'starting',
             waitingApproval: false,
             detailKey: '',
-            label: '启动中',
+            label: 'Starting',
             detail: '',
             stepProgress: '',
             startedAtMs: mainLiveAct.startedAtMs || 0,
@@ -2279,7 +2279,7 @@ export async function buildTelemetryPayloadInternal(
             actionKey: allRunningAreSwarm ? 'waiting_swarm' : 'waiting_subagent',
             waitingApproval: false,
             detailKey: '',
-            label: allRunningAreSwarm ? '等待工蜂' : '等待子代理',
+            label: allRunningAreSwarm ? 'Waiting for swarm' : 'Waiting for subagent',
             detail: runningSubList.map((s) => s.customRole || s.role).join(', '),
             stepProgress: '',
             startedAtMs: runningSubList[0]?.liveActivity?.startedAtMs || rootFallbackMs,
@@ -2507,7 +2507,7 @@ export async function buildTelemetryPayloadInternal(
     try {
       /* read-only: skip CLI_STATUS_SNAPSHOT_FILE write */
     } catch {
-      // 快照落盘属于旁路辅助能力，任何异常绝不阻断主遥测响应
+      // Snapshot persistence is an auxiliary side-channel; never let errors block the main telemetry response
     }
   }
 
@@ -2970,7 +2970,7 @@ export function buildCliStatusSnapshot(finalPayload, updatedAtMs = Date.now()) {
 }
 
 /**
- * 带并发请求合并（In-Flight Deduplication）的遥测载荷构建入口。
+ * Telemetry payload builder entry point with in-flight request deduplication.
  *
  * @param {string} requestedConvId
  * @param {boolean} [forceQuotaRefresh=false]

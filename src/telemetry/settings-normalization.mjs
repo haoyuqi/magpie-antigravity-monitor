@@ -1,6 +1,6 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 前后端与 CLI 共用的偏好设置枚举常量、默认值与无状态纯函数归一化规则。
+ * @fileoverview Shared preference enum constants, defaults, and stateless pure-function normalization rules for frontend, backend, and CLI.
  */
 
 export const SUPPORTED_LANGUAGES = Object.freeze(['auto', 'zh-CN', 'en-US']);
@@ -120,37 +120,25 @@ export const DEFAULT_STEP_TOKEN_COMBO_FORMAT = 'context:in:cache';
 export const STEP_TOKEN_SEGMENT_ALIASES = Object.freeze({
   context: 'context',
   ctx: 'context',
-  '上下文': 'context',
   in: 'in',
   new: 'in',
   input: 'in',
-  '输入': 'in',
-  '新输入': 'in',
   out: 'out',
   output: 'out',
-  '输出': 'out',
-  '总输出': 'out',
   cache: 'cache',
   cached: 'cache',
   cache_read: 'cache',
   cacheread: 'cache',
-  '缓存': 'cache',
-  '缓存读': 'cache',
   think: 'think',
   thinking: 'think',
-  '思考': 'think',
   reply: 'reply',
   body: 'reply',
   resp: 'reply',
   response: 'reply',
   text: 'reply',
-  '正文': 'reply',
-  '回复': 'reply',
   total: 'total',
   all: 'total',
   sum: 'total',
-  '总计': 'total',
-  '总token': 'total',
 });
 
 export const POPOVER_WIDTH_MODES = Object.freeze(['auto', 'custom']);
@@ -159,7 +147,7 @@ export const MAX_POPOVER_WIDTH = 1080;
 export const DEFAULT_POPOVER_WIDTH = 580;
 
 /**
- * 归一化界面语言枚举（默认 `'auto'`，支持 `'zh-CN'` 及 `'en-US'`）。
+ * Normalizes the UI language enum (default `'auto'`, supporting `'zh-CN'` and `'en-US'`).
  *
  * @param {unknown} lang
  * @returns {'auto'|'zh-CN'|'en-US'}
@@ -175,7 +163,7 @@ export function normalizeLanguageSetting(lang) {
 }
 
 /**
- * 归一化主题强调色预设键（默认 `'host'` 跟随宿主原生主题）。
+ * Normalizes the theme accent color preset key (default `'host'` to follow the host native theme).
  *
  * @param {unknown} accent
  * @returns {'host'|'blue'|'emerald'|'amber'|'violet'|'cyan'|'rose'}
@@ -186,7 +174,7 @@ export function normalizeThemeAccent(accent) {
 }
 
 /**
- * 归一化面板字号档位（默认 `'md'` 标准 100%）。
+ * Normalizes the panel font size tier (default `'md'`, standard 100%).
  *
  * @param {unknown} scale
  * @returns {'sm'|'md'|'lg'|'xl'}
@@ -197,7 +185,7 @@ export function normalizeFontScale(scale) {
 }
 
 /**
- * 归一化模型名称展示模式（`'short'` | `'upstream_compact'` | `'upstream'`），兼容历史 `showUpstreamModel`。
+ * Normalizes the model name display mode (`'short'` | `'upstream_compact'` | `'upstream'`), compatible with legacy `showUpstreamModel`.
  *
  * @param {unknown} mode
  * @param {unknown} [legacyShowUpstream]
@@ -215,7 +203,7 @@ export function normalizeModelDisplayMode(mode, legacyShowUpstream) {
 }
 
 /**
- * 归一化 Orchestrator 系列模型 ID 显示风格（`'compact'` vs `'full'`，默认 `'compact'`）。
+ * Normalizes the Orchestrator series model ID display style (`'compact'` vs `'full'`, default `'compact'`).
  *
  * @param {unknown} mode
  * @returns {'compact'|'full'}
@@ -225,7 +213,7 @@ export function normalizeOrchestratorIdMode(mode) {
 }
 
 /**
- * 归一化悬浮主面板宽度模式（`'auto'` | `'custom'`，默认 `'auto'`）。
+ * Normalizes the floating main panel width mode (`'auto'` | `'custom'`, default `'auto'`).
  *
  * @param {unknown} mode
  * @returns {'auto'|'custom'}
@@ -236,7 +224,7 @@ export function normalizePopoverWidthMode(mode) {
 }
 
 /**
- * 归一化悬浮主面板自定义宽度像素值（范围 `440..1080`，默认 `580`）。
+ * Normalizes the floating main panel custom width in pixels (range `440..1080`, default `580`).
  *
  * @param {unknown} width
  * @returns {number}
@@ -248,7 +236,7 @@ export function normalizePopoverWidth(width) {
 }
 
 /**
- * 解析步骤表自定义 Token 组合表达式，支持 `:`、`/`、`,`、`|` 分隔与中英文别名（1~4 项不重复）。
+ * Parses a step-table custom token combo expression, supporting `:`, `/`, `,`, `|` separators and aliases (1 to 4 unique items).
  *
  * @param {unknown} raw
  * @returns {Array<'context'|'in'|'out'|'cache'|'think'|'reply'|'total'>}
@@ -274,7 +262,7 @@ export function parseStepTokenComboSegments(raw) {
 }
 
 /**
- * 归一化步骤表自定义 Token 组合格式字符串（如 `'context:new:cache'` -> `'context:in:cache'`）。
+ * Normalizes a step-table custom token combo format string (e.g. `'context:new:cache'` -> `'context:in:cache'`).
  *
  * @param {unknown} raw
  * @returns {string}
@@ -284,7 +272,7 @@ export function normalizeStepTokenComboFormat(raw) {
 }
 
 /**
- * 归一化插件更新策略枚举（兼容历史 `autoUpdatePlugin` 布尔开关，默认 `'manual'`）。
+ * Normalizes the plugin update policy enum (compatible with legacy `autoUpdatePlugin` boolean flag, default `'manual'`).
  *
  * @param {unknown} mode
  * @param {unknown} [legacyAutoUpdate]
@@ -298,7 +286,7 @@ export function normalizePluginUpdateMode(mode, legacyAutoUpdate) {
 }
 
 /**
- * 归一化面板挂载方式枚举（`'dual'` | `'composer'` | `'sidebar'`），兼容历史 `enableWindowOverlay`。
+ * Normalizes the panel mount mode enum (`'dual'` | `'composer'` | `'sidebar'`), compatible with legacy `enableWindowOverlay`.
  *
  * @param {unknown} mode
  * @param {unknown} [legacyEnableOverlay]
@@ -314,7 +302,7 @@ export function normalizeWindowMountMode(mode, legacyEnableOverlay) {
 }
 
 /**
- * 归一化每周额度统计模式枚举（`'official'` | `'custom_tokens'` | `'custom_cost'`）。
+ * Normalizes the weekly quota statistics mode enum (`'official'` | `'custom_tokens'` | `'custom_cost'`).
  *
  * @param {unknown} mode
  * @returns {'official'|'custom_tokens'|'custom_cost'}
@@ -327,7 +315,7 @@ export function normalizeWeeklyLimitMode(mode) {
 }
 
 /**
- * 归一化顶栏/输入框胶囊槽位数组（1~5 项动态自添加，默认 3 项，自动清洗历史 `'none'` 与重复项）。
+ * Normalizes the topbar/composer capsule slots array (1 to 5 dynamically added items, default 3 items; automatically strips legacy `'none'` and duplicates).
  *
  * @param {unknown} raw
  * @returns {string[]}
@@ -354,8 +342,8 @@ export function normalizeTopbarCapsuleSlots(raw) {
 }
 
 /**
- * 归一化 CLI 底部状态栏独立槽位配置（`null` 表示自动跟随宽屏默认或自定义顶栏槽位；
- * 支持预设名 `compact` / `balanced` / `full`、逗号分隔列表或数组，保留 1~6 个去重合法槽位）。
+ * Normalizes the standalone CLI bottom status line slots config (`null` means auto-follow widescreen default or custom topbar slots;
+ * supports preset names `compact` / `balanced` / `full`, comma-separated lists, or arrays, keeping 1 to 6 deduplicated valid slots).
  *
  * @param {unknown} raw
  * @returns {string[]|null}
@@ -393,10 +381,10 @@ export function normalizeCliStatusLineSlots(raw) {
 }
 
 /**
- * 解析当前生效的 CLI 底栏槽位列表：
- * 1. 若用户显式设置了 `cliStatusLineSlots`，优先使用；
- * 2. 若用户自定义了非默认 `topbarCapsuleSlots`，沿用其自定义顺序保持兼容；
- * 3. 否则采用面向宽终端的 5 槽默认组合（速度 / 首字 / 费用 / 配额 / 上下文）。
+ * Resolves the active CLI bottom status line slots list:
+ * 1. If the user explicitly set `cliStatusLineSlots`, use it first;
+ * 2. If the user customized a non-default `topbarCapsuleSlots`, preserve that custom order for compatibility;
+ * 3. Otherwise use the 5-slot widescreen default combination (speed / TTFT / cost / quota / context).
  *
  * @param {object|null|undefined} settings
  * @returns {string[]}
@@ -417,7 +405,7 @@ export function resolveEffectiveCliStatusLineSlots(settings) {
 }
 
 /**
- * 归一化实时监控第一行指标矩阵的槽位与顺序（1~4 项，默认 4 项）。
+ * Normalizes the slot selection and order for the first row of the live monitor metric matrix (1 to 4 items, default 4 items).
  *
  * @param {unknown} raw
  * @returns {string[]}
@@ -440,7 +428,7 @@ export function normalizeOverviewMetrics(raw) {
 }
 
 /**
- * 归一化实时监控视图展示的模块及上下顺序（1~4 项，默认 4 项全开）。
+ * Normalizes the displayed modules and vertical order for the live monitor view (1 to 4 items, default all 4 enabled).
  *
  * @param {unknown} raw
  * @returns {string[]}
@@ -462,7 +450,7 @@ export function normalizeOverviewModules(raw) {
 }
 
 /**
- * 归一化鼠标悬停速览窗展示的模块及上下顺序（0~4 项，默认 3 项；显式空数组 `[]` 表示禁用悬停弹窗）。
+ * Normalizes the displayed modules and vertical order for the hover quick-peek popup (0 to 4 items, default 3 items; an explicit empty array `[]` disables the hover popup).
  *
  * @param {unknown} raw
  * @returns {string[]}
@@ -484,7 +472,7 @@ export function normalizeHoverModules(raw) {
 }
 
 /**
- * 归一化调用明细「按步查看」表格列配置与左右顺序（2~14 列，默认保留现有 7 列）。
+ * Normalizes the column configuration and left-to-right order for the call-detail "By Step" table (2 to 14 columns, default 7 columns).
  *
  * @param {unknown} raw
  * @returns {string[]}
@@ -515,7 +503,7 @@ export function normalizeStepTableColumns(raw) {
 }
 
 /**
- * 归一化独立 Web 服务自动托管端口（`0` 表示关闭自动拉起，合法监听端口范围 `1024..65535`）。
+ * Normalizes the standalone web server auto-managed port (`0` disables auto-start; valid listening port range `1024..65535`).
  *
  * @param {unknown} port
  * @returns {number}
@@ -528,7 +516,7 @@ export function normalizeStandalonePort(port) {
 }
 
 /**
- * 归一化现代化 UI 开关（默认 `true`）。
+ * Normalizes the modern UI toggle (default `true`).
  *
  * @param {unknown} val
  * @returns {boolean}
@@ -551,7 +539,7 @@ export const ACCOUNT_QUOTA_REFRESH_MINUTES = Object.freeze([10, 30, 60, 180, 360
 export const DEFAULT_ACCOUNT_QUOTA_REFRESH_MINUTES = 60;
 
 /**
- * 归一化非当前账号的后台配额刷新间隔（分钟，默认 `60` 即 1 小时）。
+ * Normalizes the background quota refresh interval for non-current accounts (in minutes, default `60`, i.e. 1 hour).
  *
  * @param {unknown} raw
  * @returns {10|30|60|180|360|720|1440}
@@ -564,7 +552,7 @@ export function normalizeAccountQuotaRefreshMinutes(raw) {
 }
 
 /**
- * 归一化顶栏胶囊及悬停速览浮窗的上下文代理来源（默认 `'main'` 锁定主代理，可选 `'auto'` 跟随活跃）。
+ * Normalizes the context agent source for the topbar capsule and hover quick-peek popup (default `'main'` locks to main agent; `'auto'` follows active agent).
  *
  * @param {unknown} raw
  * @returns {'main'|'auto'}
@@ -575,7 +563,7 @@ export function normalizeContextAgentMode(raw) {
 }
 
 /**
- * 归一化配额预占估算开关（默认 `true`）。
+ * Normalizes the quota reservation estimation toggle (default `true`).
  *
  * @param {unknown} val
  * @returns {boolean}
@@ -592,7 +580,7 @@ export function normalizeExperimentalQuotaReservation(val) {
 }
 
 /**
- * 归一化旧版实验性新 UI 字段（保留兼容，缺省返回 `false`）。
+ * Normalizes the legacy experimental new UI field (retained for compatibility, defaults to `false`).
  *
  * @param {unknown} val
  * @returns {boolean}

@@ -1,26 +1,26 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 模型身份识别、展示名称规范化与单步 API 等效成本计算。
+ * @fileoverview Model identity resolution, display name normalization, and per-step API-equivalent cost calculation.
  *
- * 核心原则：
- * 1. 优先融合服务端下发的动态模型目录 (`dynamicModelMap`)、静态占位符表 (`PLACEHOLDER_MAP`)
- *    与真实响应模型 (`responseModel`)，并优先匹配含档位后缀的精确价格条目；
- * 2. 价格未知或模型身份无法确认时，严格返回 `pricing: null` 与 `costUsd: null`，
- *    绝不借用其他模型单价伪造费用。
+ * Core principles:
+ * 1. Merge the server-provided dynamic model catalog (`dynamicModelMap`), static placeholder table (`PLACEHOLDER_MAP`),
+ *    and actual response model (`responseModel`) with priority, matching exact pricing entries with tier suffixes first;
+ * 2. When pricing is unknown or model identity cannot be confirmed, strictly return `pricing: null` and `costUsd: null`,
+ *    never borrowing unit prices from other models to fabricate costs.
  */
 
 import { parseIsoMs } from './trajectory-metrics.mjs';
 import { MODEL_PRICING, PLACEHOLDER_MAP } from './pricing-catalog.mjs';
 
 /**
- * 根据 API 提供商枚举或模型标识符推断所属模型家族（`'Gemini'` | `'Claude'` | `'GPT'` | `'Other'`）。
- * 注意：先匹配更具体的 `ANTHROPIC`/`CLAUDE` 与 `OPENAI`/`GPT`（含 `o1`/`o3`/`o4` 系列），
- * 防止 `API_PROVIDER_GOOGLE_VERTEX_ANTHROPIC` 被宽泛的 `GOOGLE` 子串抢先误判为 `'Gemini'`。
+ * Infers the model family (`'Gemini'` | `'Claude'` | `'GPT'` | `'Other'`) from API provider enum or model identifiers.
+ * Note: match more specific `ANTHROPIC`/`CLAUDE` and `OPENAI`/`GPT` (including `o1`/`o3`/`o4` series) first,
+ * preventing `API_PROVIDER_GOOGLE_VERTEX_ANTHROPIC` from being prematurely misclassified as `'Gemini'` by a broad `GOOGLE` substring.
  *
- * @param {string} [rawModelKey=''] 原始模型键名或占位符
- * @param {string} [modelId=''] 规范化模型 ID
- * @param {string} [apiProvider=''] 上游 API 提供商枚举字符串
- * @param {string} [displayLabel=''] 已解析的模型展示标签
+ * @param {string} [rawModelKey=''] Raw model key or placeholder
+ * @param {string} [modelId=''] Normalized model ID
+ * @param {string} [apiProvider=''] Upstream API provider enum string
+ * @param {string} [displayLabel=''] Resolved model display label
  * @returns {'Gemini'|'Claude'|'GPT'|'Other'}
  */
 function inferFamilyFromProviderOrKey(
@@ -69,9 +69,9 @@ function inferFamilyFromProviderOrKey(
 }
 
 /**
- * 判断一组模型标识字段是否指向 Gemini 4 Neon 系列模型（含 M535 及 M537 Orchestrator (Neon)）。
+ * Checks whether a set of model identifier fields refers to the Gemini 4 Neon series (including M535 and M537 Orchestrator (Neon)).
  *
- * @param {...string} parts 待检测的标识片段
+ * @param {...string} parts Identifier fragments to inspect
  * @returns {boolean}
  */
 export function isNeonModelIdentifier(...parts) {
@@ -86,9 +86,9 @@ export function isNeonModelIdentifier(...parts) {
 }
 
 /**
- * 判断一组模型标识字段是否指向 Gemini 4 Argon 系列模型（含 M417/M418/M419 及 M681 Orchestrator (Argon)）。
+ * Checks whether a set of model identifier fields refers to the Gemini 4 Argon series (including M417/M418/M419 and M681 Orchestrator (Argon)).
  *
- * @param {...string} parts 待检测的标识片段
+ * @param {...string} parts Identifier fragments to inspect
  * @returns {boolean}
  */
 export function isArgonModelIdentifier(...parts) {
@@ -103,7 +103,7 @@ export function isArgonModelIdentifier(...parts) {
 }
 
 /**
- * 将 Orchestrator 变体标签或路由后缀归一化为紧凑代号（如 `"Claude Opus 5.5"` -> `"opus-5.5"`、`"Xenon"` -> `"xenon"`）。
+ * Normalizes an Orchestrator variant label or routing suffix into a compact codename (e.g. `"Claude Opus 5.5"` -> `"opus-5.5"`, `"Xenon"` -> `"xenon"`).
  *
  * @param {string} [raw='']
  * @returns {string}
@@ -125,8 +125,8 @@ function normalizeOrchestratorVariantSlug(raw = '') {
 }
 
 /**
- * 从一组标识字段中提取显式的非通用 Orchestrator 变体代号（如 `Orchestrator (Opus 5.5)` -> `'opus-5.5'`、
- * `Orchestrator (Xenon)` -> `'xenon'`、`claude-opus-5-5-orchestrator` -> `'opus-5.5'`）。未命中时返回空字符串。
+ * Extracts an explicit non-generic Orchestrator variant codename from identifier fields (e.g. `Orchestrator (Opus 5.5)` -> `'opus-5.5'`,
+ * `Orchestrator (Xenon)` -> `'xenon'`, `claude-opus-5-5-orchestrator` -> `'opus-5.5'`). Returns an empty string if unmatched.
  *
  * @param {...string} parts
  * @returns {string}
@@ -164,11 +164,11 @@ function extractExplicitOrchestratorVariant(...parts) {
 }
 
 /**
- * 判断一组模型标识字段是否指向 Gemini 4 Carbon 系列模型（含 M427/M429/M437/M438 及 M667 Orchestrator (Carbon)）。
- * 仅当显式命中 Carbon 标识，或裸 `gemini-pro-orchestrator` 不携带任何其他变体代号时才判定为 Carbon，
- * 防止未来新增 `Orchestrator (<新代号>)` 被静默误判为 Carbon。
+ * Checks whether a set of model identifier fields refers to the Gemini 4 Carbon series (including M427/M429/M437/M438 and M667 Orchestrator (Carbon)).
+ * Only classifies as Carbon when a Carbon identifier is explicitly matched or bare `gemini-pro-orchestrator` carries no other variant codename,
+ * preventing future `Orchestrator (<new-codename>)` variants from being silently misclassified as Carbon.
  *
- * @param {...string} parts 待检测的标识片段
+ * @param {...string} parts Identifier fragments to inspect
  * @returns {boolean}
  */
 export function isCarbonModelIdentifier(...parts) {
@@ -193,8 +193,8 @@ export function isCarbonModelIdentifier(...parts) {
 }
 
 /**
- * 剥离模型展示名称末尾的思考档位后缀（如 `(XHigh)`、`(High)`、`(Medium)`、`(Thinking)`），提取基础模型族名。
- * 保留 `(Carbon)` / `(Argon)` / `(Neon)` 后缀，以便不同 Orchestrator 系列在汇总表中保持分列。
+ * Strips trailing thinking-tier suffixes from a model display name (such as `(XHigh)`, `(High)`, `(Medium)`, `(Thinking)`) to extract the base family name.
+ * Preserves `(Carbon)` / `(Argon)` / `(Neon)` suffixes so different Orchestrator series remain separated in summary tables.
  *
  * @param {string} [label='']
  * @returns {string}
@@ -218,8 +218,8 @@ const SLUG_TIER_LABELS = {
 };
 
 /**
- * 将严格匹配的 `gemini-3.1-pro`、`gemini-3.5-flash-lite`、`gemini-4-carbon` 或已知内部路由别名转为人类可读标签。
- * 使用行尾锚点 `$` 防止未收录新后缀（如 `gemini-3.1-pro-ultra-v2`）被静默截断伪装成旧模型获取错误定价。
+ * Converts strictly matched `gemini-3.1-pro`, `gemini-3.5-flash-lite`, `gemini-4-carbon`, or known internal routing aliases into human-readable labels.
+ * Uses end-of-line anchor `$` to prevent unlisted new suffixes (e.g. `gemini-3.1-pro-ultra-v2`) from being silently truncated and disguised as older models with wrong pricing.
  *
  * @param {string} [slug='']
  * @returns {string}
@@ -291,8 +291,8 @@ function extractStepTimestampMs(step) {
 }
 
 /**
- * 根据目标时间戳匹配模型价格条目的时间阶段（`phases`，左闭右开 `[fromMs, untilMs)`）。
- * 未传入有效时间戳时按当前时刻匹配；未命中任何阶段或未配置阶段时回退至顶层基础单价。
+ * Matches the time phase (`phases`, half-open interval `[fromMs, untilMs)`) of a model pricing entry for the target timestamp.
+ * Falls back to the current time if no valid timestamp is provided; falls back to top-level base unit prices if no phase matches or none are configured.
  *
  * @param {object|null} pricingEntry
  * @param {number|string|null} [atMs]
@@ -367,7 +367,7 @@ function resolveModelCatalogEntry(
       : null;
   const staticPh = PLACEHOLDER_MAP[rawModelKey] || null;
 
-  // 若 GetUserStatus 仅下发了 label 而未下发真实 modelId（或被填成占位符自身），继续合并静态 PLACEHOLDER_MAP 的精确 modelId
+  // If GetUserStatus only provided label without a real modelId (or filled it with the placeholder itself), merge the exact modelId from static PLACEHOLDER_MAP
   const dynValidModelId =
     dynEntry?.modelId && dynEntry.modelId !== rawModelKey ? dynEntry.modelId : '';
   const mergedModelId = dynValidModelId || staticPh?.modelId || dynEntry?.modelId || '';
@@ -405,9 +405,9 @@ function resolveModelCatalogEntry(
     formatGenericModelSlug(rawModelKey) ||
     formatGenericModelSlug(cleanResponseModel) ||
     cleanRawFallback ||
-    '模型未知';
+    'Unknown model';
 
-  // 先生成保留档位后缀的精确 Slug（如 "Gemini 3.8 Flash (Low)" -> "gemini-3.8-flash-low"），防止被基础族名定价覆盖
+  // Generate an exact slug preserving tier suffix first (e.g. "Gemini 3.8 Flash (Low)" -> "gemini-3.8-flash-low") to prevent being shadowed by base family pricing
   const tieredSlug = derivedDisplay
     .toLowerCase()
     .replace(/[()]/g, ' ')
@@ -508,14 +508,14 @@ function resolveModelCatalogEntry(
 }
 
 /**
- * 综合动态模型目录、占位符字典与价格表，解析步骤对应的模型元数据与指定时刻的单价配置。
+ * Combines the dynamic model catalog, placeholder dictionary, and pricing table to resolve step model metadata and unit pricing at a given timestamp.
  *
- * @param {string} rawModelKey 步骤记录的原始模型键（如 `MODEL_PLACEHOLDER_M320`）
- * @param {Map<string, {modelId: string, label: string, quotaInfo?: object}>} [dynamicModelMap=new Map()] 从 `GetUserStatus` 提取的动态模型表
- * @param {string} [apiProvider=''] API 提供商枚举
- * @param {string} [modelDisplayName=''] 已知的模型展示名称
- * @param {string} [responseModel=''] 实际响应的上游模型 ID（如 `gemini-3.8-flash-n`）
- * @param {number|string|null} [atMs=0] 步骤发生时间戳（缺省按当前时刻匹配阶段价格）
+ * @param {string} rawModelKey Raw model key recorded on the step (e.g. `MODEL_PLACEHOLDER_M320`)
+ * @param {Map<string, {modelId: string, label: string, quotaInfo?: object}>} [dynamicModelMap=new Map()] Dynamic model map extracted from `GetUserStatus`
+ * @param {string} [apiProvider=''] API provider enum
+ * @param {string} [modelDisplayName=''] Known model display name
+ * @param {string} [responseModel=''] Actual upstream response model ID (e.g. `gemini-3.8-flash-n`)
+ * @param {number|string|null} [atMs=0] Step timestamp (defaults to current time for phase pricing matching)
  */
 export function resolveModelInfo(
   rawModelKey,
@@ -537,7 +537,7 @@ export function resolveModelInfo(
   return effectivePricing === catalogPricing ? info : { ...info, pricing: effectivePricing };
 }
 
-/** 在单次遥测请求内按模型身份与价格阶段复用解析结果。 */
+/** Reuses resolved results by model identity and pricing phase within a single telemetry request. */
 export function createStepModelResolver(dynamicModelMap) {
   const models = new Map();
   return (step) => {
@@ -612,8 +612,8 @@ export function createStepModelResolver(dynamicModelMap) {
 }
 
 /**
- * 为不透明的 Orchestrator 路由模型 ID 补充底层实际模型代号标注（如 `gemini-pro-orchestrator (carbon-4)`），
- * 普通透明上游模型 ID（如 `gemini-3.8-flash-n`、`gemini-4-hydrogen`）原样返回。
+ * Annotates opaque Orchestrator routing model IDs with the underlying actual model codename (e.g. `gemini-pro-orchestrator (carbon-4)`),
+ * while returning ordinary transparent upstream model IDs (e.g. `gemini-3.8-flash-n`, `gemini-4-hydrogen`) unchanged.
  *
  * @param {string} [rawUpstream='']
  * @param {ReturnType<typeof resolveModelInfo>|null} [mInfo=null]
@@ -648,8 +648,8 @@ export function formatUpstreamModelId(rawUpstream = '', mInfo = null) {
 }
 
 /**
- * 计算单个步骤的 API 等效美元成本；若模型未定价（`pricing === null`）则返回 `null`。
- * 对负数、NaN 或非有限数值统一安全钳制为 0。
+ * Computes the API-equivalent USD cost for a single step; returns `null` if the model is unpriced (`pricing === null`).
+ * Safely clamps negative, NaN, or non-finite numbers to 0.
  *
  * @param {{ inputTokens: number, cacheReadTokens: number, outputTokens: number }} step
  * @param {{ input: number, cache: number, output: number } | null} pricing

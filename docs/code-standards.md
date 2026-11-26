@@ -3,6 +3,7 @@
 ## Runtime and dependencies
 
 - **Zero external npm dependencies**: Every module in `src/` and `test/` uses pure ESM and Node/Bun built-ins only.
+- **English-only repository**: All source code, comments, JSDoc, string literals, tests, and documentation must be written in English with zero CJK characters.
 - **Dual-runtime compatibility (Bun + Node)**:
   - All production code targets Magpie's bundled **Bun** host and must also run cleanly under Node 22.5+ for local verification.
   - Because Bun does not ship `node:sqlite`, callers that touch SQLite must run `installBunSqliteShim()` before opening databases via `sqlite-client.mjs`.

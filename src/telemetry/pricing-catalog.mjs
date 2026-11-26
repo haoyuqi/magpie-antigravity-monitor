@@ -1,13 +1,13 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 模型价格与占位符目录加载、Schema 安全清洗及本地/云端目录合并。
+ * @fileoverview Model pricing and placeholder catalog loading, schema sanitization, and local/cloud catalog merging.
  *
- * 价格口径与安全原则：
- * - 所有单价单位均为 USD / 1M Tokens（`input`: 未命中缓存输入, `cache`: 缓存读取, `output`: 输出与思考）；
- * - 价格仅用于本地 API 等效成本折算，不代表订阅配额的扣减比例；
- * - 离线基准统一从随包发布的 `pricing-catalog.json` 读取，避免在 JS 源码中重复维护双份硬编码字典；
- * - 未收录或身份未知的模型严格保持未定价状态（`null`），绝不借用其他模型价格，也绝不允许 `null`/`0` 伪价格混入；
- * - 版本号（遵循 SemVer 2.0）与更新包 URL 均经过严格格式与可信 GitHub 域名白名单校验。
+ * Pricing conventions and safety principles:
+ * - All unit prices are in USD per 1M tokens (`input`: uncached input, `cache`: cache read, `output`: output & thinking);
+ * - Prices are only used for local API-equivalent cost estimation and do not represent subscription quota deduction ratios;
+ * - Offline baselines are read uniformly from the bundled `pricing-catalog.json` to avoid maintaining duplicate hardcoded dictionaries in JS source;
+ * - Unlisted or unidentified models strictly remain unpriced (`null`), never borrowing prices from other models or allowing `null`/`0` pseudo-prices;
+ * - Version numbers (following SemVer 2.0) and update package URLs undergo strict format and trusted GitHub domain allowlist validation.
  */
 
 import { existsSync } from 'node:fs';
@@ -30,7 +30,7 @@ import {
 } from '../runtime/paths.mjs';
 
 /**
- * 当前生效的模型价格表与占位符映射表（通过就地更新属性保持跨模块引用一致）。
+ * Active model pricing table and placeholder map (updated in place to keep cross-module references consistent).
  */
 export const MODEL_PRICING = {};
 export const PLACEHOLDER_MAP = {};
@@ -38,7 +38,7 @@ export let pricingCatalogRevision = 0;
 let pricingPhaseBoundariesMs = [];
 
 /**
- * 返回给定时刻已跨过的全局价格阶段边界计数，供遥测与聚合快照在跨越优惠截止时间点时自动失效重算。
+ * Returns the count of global pricing phase boundaries crossed by the given timestamp, allowing telemetry and aggregate snapshots to invalidate and recompute automatically when a promotional cutoff is crossed.
  *
  * @param {number} [atMs=Date.now()]
  * @returns {number}
@@ -55,7 +55,7 @@ export function getPricingPhaseEpoch(atMs = Date.now()) {
 }
 
 /**
- * 校验字符串是否为合法的 SemVer 2.0 语义化版本号格式（支持 `-prerelease` 与 `+build` 元数据）。
+ * Validates whether a string is a valid SemVer 2.0 semantic version format (supports `-prerelease` and `+build` metadata).
  *
  * @param {*} v
  * @returns {boolean}
@@ -71,7 +71,7 @@ const OFFICIAL_REPO_PATH_PREFIX = `/${OFFICIAL_GITHUB_REPO.toLowerCase()}`;
 const LEGACY_REPO_PATH_PREFIXES = LEGACY_GITHUB_REPOS.map((repo) => `/${repo.toLowerCase()}`);
 
 /**
- * 判断来源 URL 是否属于已迁移的旧官方 GitHub 仓库地址。
+ * Checks whether a source URL belongs to a migrated legacy official GitHub repository address.
  *
  * @param {*} rawUrl
  * @returns {boolean}
@@ -98,7 +98,7 @@ function isLegacyGithubRepoUrl(rawUrl) {
 }
 
 /**
- * 校验更新/下载链接是否属于可信的 GitHub 官方仓库与 HTTPS 域名白名单。
+ * Validates whether an update/download URL belongs to a trusted official GitHub repository and HTTPS domain allowlist.
  *
  * @param {*} rawUrl
  * @param {string} fallbackUrl
@@ -128,11 +128,11 @@ function sanitizeTrustedGithubUrl(rawUrl, fallbackUrl) {
 }
 
 /**
- * 按 SemVer 2.0 规范（§10 忽略 `+build` 元数据，§11.4 按 ASCII 码序与纯数字段逐级比较预发布标签）比较两个版本号。
+ * Compares two version numbers per SemVer 2.0 (section 10 ignores `+build` metadata; section 11.4 compares pre-release identifiers by ASCII order and numeric-only precedence).
  *
  * @param {string} a
  * @param {string} b
- * @returns {number} `1` 表示 `a > b`，`-1` 表示 `a < b`，`0` 表示相等
+ * @returns {number} `1` if `a > b`, `-1` if `a < b`, `0` if equal
  */
 export function compareSemver(a, b) {
   if (!isValidSemver(a) || !isValidSemver(b)) return 0;
@@ -178,10 +178,10 @@ export function compareSemver(a, b) {
       if (bigA !== bigB) return bigA > bigB ? 1 : -1;
       continue;
     }
-    // SemVer 2.0 §11.4.1：纯数字标识符的优先级始终低于含字母标识符
+    // SemVer 2.0 §11.4.1: numeric identifiers always have lower precedence than alphanumeric identifiers
     if (numA && !numB) return -1;
     if (!numA && numB) return 1;
-    // SemVer 2.0 §11.4.2：含字母标识符按 ASCII 字节序比较
+    // SemVer 2.0 §11.4.2: alphanumeric identifiers are compared in ASCII lexical order
     return idA < idB ? -1 : 1;
   }
   if (idsA.length === idsB.length) return 0;
@@ -189,7 +189,7 @@ export function compareSemver(a, b) {
 }
 
 /**
- * 读取当前已安装插件的 `plugin.json` 版本号。
+ * Reads the `plugin.json` version of the currently installed plugin.
  *
  * @returns {string}
  */
@@ -227,8 +227,8 @@ function isValidPricingRateTriplet(entry) {
 }
 
 /**
- * 校验并归一化单个时间阶段单价配置（左闭右开 `[fromMs, untilMs)`）。
- * 至少需声明合法的 `from` 或 `until` ISO 时间戳，且若同时声明须满足 `fromMs < untilMs`。
+ * Validates and normalizes a single time-phased pricing entry (half-open interval `[fromMs, untilMs)`).
+ * At least one valid `from` or `until` ISO timestamp must be declared, and if both are declared, `fromMs < untilMs` must hold.
  */
 function sanitizeOptionalImageOutputRate(val) {
   return typeof val === 'number' && Number.isFinite(val) && val > 0 && val <= 10000 ? val : null;
@@ -268,10 +268,10 @@ function sanitizePricingPhase(rawPhase) {
 }
 
 /**
- * 校验单条模型价格配置是否合法：
- * - `input`/`cache`/`output` 必须为原生 `number` 类型（阻止 `Number(null) === 0` 或 `Number("") === 0` 的隐式转换漏洞）；
- * - 数值必须非负且 `<= 10000`，且至少 `input > 0` 或 `output > 0`（拒绝全 0 伪价格将未定价模型篡改为 $0.00）；
- * - `short`/`family` 必须为非空字符串。
+ * Validates whether a single model pricing configuration is valid:
+ * - `input`/`cache`/`output` must be native `number` types (preventing implicit conversion bugs like `Number(null) === 0` or `Number("") === 0`);
+ * - Values must be non-negative and `<= 10000`, with at least `input > 0` or `output > 0` (rejecting all-zero pseudo-prices that would turn unpriced models into $0.00);
+ * - `short`/`family` must be non-empty strings.
  */
 function isValidPricingEntry(entry) {
   if (!isValidPricingRateTriplet(entry)) return false;
@@ -281,7 +281,7 @@ function isValidPricingEntry(entry) {
 }
 
 /**
- * 校验单条枚举占位符映射是否合法。
+ * Validates whether a single enum placeholder mapping is valid.
  */
 function isValidPlaceholderEntry(entry) {
   if (!entry || typeof entry !== 'object') return false;
@@ -291,8 +291,8 @@ function isValidPlaceholderEntry(entry) {
 }
 
 /**
- * 清洗并校验来自本地或云端的 `pricing-catalog.json` 原始对象。
- * 任何格式不合法的单条记录会被自动过滤，防止异常数据污染内存价格表。
+ * Sanitizes and validates a raw `pricing-catalog.json` object from local or cloud sources.
+ * Any malformed individual entry is automatically filtered out to prevent corrupt data from polluting the in-memory pricing table.
  *
  * @param {object} raw
  * @returns {object|null}
@@ -378,7 +378,7 @@ export function sanitizeCatalogPayload(raw) {
 }
 
 /**
- * 按「随包本地目录 -> 云端缓存（按 `updatedAt` 新旧自动裁决优先级）」合并重建内存价格表。
+ * Rebuilds the in-memory pricing table by merging the bundled local catalog -> cloud cache (with precedence automatically resolved by `updatedAt` recency).
  */
 export function rebuildActiveCatalog() {
   const localRaw = loadJson(LOCAL_CATALOG_FILE, null);
@@ -442,7 +442,7 @@ export function rebuildActiveCatalog() {
     );
     const shouldAcceptCatalogReleaseMeta = !customForkRepo || isFromCustomFork;
     if (shouldAcceptCatalogReleaseMeta && cat.latestPluginVersion) {
-      // 以当前更高优先级层的 latestPluginVersion 为准，但永不低于本地已安装版本；自定义 Fork 忽略上游版本号
+      // Use the latestPluginVersion from the higher-priority layer, but never lower than the locally installed version; custom forks ignore upstream versions
       latestPluginVersion =
         compareSemver(cat.latestPluginVersion, installedVersion) > 0
           ? cat.latestPluginVersion
@@ -483,11 +483,11 @@ export function rebuildActiveCatalog() {
   cloudSyncState.archiveFallbackUrl = archiveFallbackUrl;
 }
 
-// 模块初始化时立即构建一次当前生效的价格目录
+// Build the active pricing catalog immediately upon module initialization
 rebuildActiveCatalog();
 
 /**
- * 获取供前端展示的云端价格目录状态与插件更新状态快照。
+ * Gets a snapshot of the cloud pricing catalog status and plugin update status for frontend display.
  */
 export function getCloudStatus() {
   const currentPluginVersion = readInstalledPluginVersion();

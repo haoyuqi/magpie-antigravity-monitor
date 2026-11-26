@@ -1,8 +1,8 @@
 /* Ported from yuhuan-dev/antigravity-usage-monitor (GPL-3.0) with Magpie read-only import paths. */
 /**
- * @fileoverview 用户偏好设置完整 Schema、默认对象工厂与带上下文窗口校验的整表归一化器。
+ * @fileoverview Full user preferences schema, default object factory, and full-object normalizer with context-window validation.
  *
- * 所有跨端通用枚举与单项纯函数归一化规则统一源自 `../shared/settings-normalization.mjs`。
+ * All cross-platform enums and single-field pure normalization rules come from `../shared/settings-normalization.mjs`.
  */
 
 const isContextWindowSettingId = () => false;
@@ -179,7 +179,7 @@ export const DEFAULT_SETTINGS_SCHEMA = Object.freeze({
 });
 
 /**
- * 创建一份深拷贝的全新默认偏好设置对象。
+ * Create a deep-copied fresh default preferences object.
  */
 export function createDefaultSettingsObject() {
   return {
@@ -194,7 +194,7 @@ export function createDefaultSettingsObject() {
 }
 
 /**
- * 将原始持久化对象或增量合并结果完整归一化为合法偏好对象。
+ * Fully normalize a raw persisted object or incremental merge result into a valid preferences object.
  *
  * @param {unknown} rawInput
  */

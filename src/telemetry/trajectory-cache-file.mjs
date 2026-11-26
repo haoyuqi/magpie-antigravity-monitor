@@ -29,7 +29,7 @@ function readReusableBytes(filePath, expected) {
   }
 }
 
-// 只复用上次确认写入的步骤字节。扫描器用新数组替换变更步骤，每次仍重新序列化会话元数据。
+// Only reuse step bytes confirmed written in the last write. The scanner replaces changed steps with a new array and still re-serializes session metadata every time.
 export function writeTrajectoryCacheFile(filePath, data) {
   const previous = lastWritesByPath.get(filePath) || null;
   const bytes = previous ? readReusableBytes(filePath, previous.file) : null;
@@ -62,7 +62,7 @@ export function writeTrajectoryCacheFile(filePath, data) {
   try {
     const fd = openSync(temporaryPath, 'wx');
     try {
-      // 按块写入，避免再复制一份完整缓存到连续缓冲区。
+      // Write in chunks to avoid copying the entire cache into another contiguous buffer.
       const batchSize = 256;
       for (let i = 0; i < parts.length; i += batchSize) {
         const batch = parts.slice(i, i + batchSize);
