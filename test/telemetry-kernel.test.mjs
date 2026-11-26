@@ -283,20 +283,32 @@ describe('read-only telemetry kernel', () => {
       const afterPreSavePayload = await buildTelemetryPayload('', false, { range: 'all' });
       assert.equal(afterPreSavePayload.settings.weeklyTokenBudget, 765432);
 
-      // 5. Cold consumption-presets overlapping clearTelemetryBuilderMemo() must never return null
-      clearTelemetryBuilderMemo();
-      let presetsGateRelease = null;
-      let presetsEnteredResolve = null;
-      const presetsEntered = new Promise((r) => {
-        presetsEnteredResolve = r;
-      });
-      let pausePresetsFirst = true;
+      // 4b. Verify fast consumption-presets snapshot was NOT overwritten by preSavePromise (0 fetches)
       globalThis.fetch = async () => {
-        if (pausePresetsFirst) {
-          pausePresetsFirst = false;
-          presetsEnteredResolve();
+        throw new Error('Unexpected fetch when fast snapshot should remain valid');
+      };
+      const fastPresets = await buildTelemetryPayload('', false, {
+        scope: 'consumption-presets',
+      });
+      assert.equal(fastPresets?.scope, 'consumption-presets');
+
+      // 5. Cold consumption-presets overlapping double clearTelemetryBuilderMemo() must never return null
+      clearTelemetryBuilderMemo();
+      let presetsFetchCount = 0;
+      const presetsGates = [];
+      const presetsEnteredPromises = [0, 1].map(() => {
+        let resolveEntered;
+        const promise = new Promise((r) => {
+          resolveEntered = r;
+        });
+        return { promise, resolveEntered };
+      });
+      globalThis.fetch = async () => {
+        const idx = presetsFetchCount++;
+        if (idx < 2) {
+          presetsEnteredPromises[idx].resolveEntered();
           await new Promise((r) => {
-            presetsGateRelease = r;
+            presetsGates[idx] = r;
           });
         }
         return new Response(JSON.stringify({ userStatus: {} }), {
@@ -308,9 +320,14 @@ describe('read-only telemetry kernel', () => {
       const coldPresetsPromise = buildTelemetryPayload('', false, {
         scope: 'consumption-presets',
       });
-      await presetsEntered;
+      await presetsEnteredPromises[0].promise;
       clearTelemetryBuilderMemo();
-      presetsGateRelease();
+      presetsGates[0]();
+
+      await presetsEnteredPromises[1].promise;
+      clearTelemetryBuilderMemo();
+      presetsGates[1]();
+
       const presetsPayload = await coldPresetsPromise;
       assert.ok(presetsPayload && typeof presetsPayload === 'object');
       assert.equal(presetsPayload.scope, 'consumption-presets');

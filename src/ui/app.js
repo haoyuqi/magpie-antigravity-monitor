@@ -1041,7 +1041,7 @@ import {
 
     document.getElementById('refresh-btn').addEventListener('click', () => {
       if (state.authExpired) {
-        window.location.reload();
+        handleUnauthorized();
         return;
       }
       fetchTelemetry({ force: true, userTriggered: true });

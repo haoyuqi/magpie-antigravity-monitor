@@ -12,7 +12,7 @@
 - **Read-only invariant**: Never mutate external Antigravity files/processes or write to Magpie's usage ledger.
 - **Magpie sandbox & local service**:
   - Launcher (`page/`) runs under `sandbox="allow-scripts"` and `connect-src 'none'`: no inline scripts, no `fetch`/`XHR`/`WebSocket` probes, no `localStorage`/`cookie` access; navigate only via `location.replace(...)` after reading `_magpie/bridge.js`.
-  - Bind local service strictly to `127.0.0.1`; enforce `Host`, `Origin` (absent, `null`, or same-origin), `Sec-Fetch-Mode: navigate` on token-bearing HTML, and persistent header token (`X-Usage-Monitor-Token`, never `Set-Cookie`).
+  - Bind local service strictly to `127.0.0.1`; enforce `Host`, `Origin` (absent, `null`, or same-origin), `Sec-Fetch-Mode: navigate` (or `Accept: text/html` with no `Origin` and no `Sec-Fetch-Mode` for plain-HTTP `magpie web --lan` navigations) on token-bearing HTML, and persistent header token (`X-Usage-Monitor-Token`, never `Set-Cookie`).
   - Handle `EADDRINUSE` during Magpie rolling host restarts with background retries without blocking plugin load.
   - Keep all frontend asset and API requests relative (`./`) via `window.sidecar.fetch` so `magpie web` subpath proxying works.
   - Isolate plugin state/cache/settings under Magpie's `input.directory`.
