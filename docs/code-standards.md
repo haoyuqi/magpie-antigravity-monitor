@@ -15,6 +15,10 @@
 - **Strict loopback Language Server RPC**: `ANTIGRAVITY_LS_ADDRESS` and `lsRuntimeEndpoint` must pass `isStrictLoopbackUrl()` before any `fetch`; all loopback RPC and endpoint-probe `fetch` calls must set `redirect: 'error'`; `test.invalid` must never synthesize `http://test.invalid`.
 - **Shared catalog validation**: `syncCloudCatalog()` must validate payloads through `sanitizeCatalogPayload()` so sync and load agree on the `pricing` schema, and must check `saveJson()`'s boolean return value before updating sync success state.
 - **Fail-closed API allowlisting**: Every HTTP route and `/api/settings` patch must pass `isAllowedApiRoute()`, `!hasBlockedSettingsAction()`, and `sanitizeSettingsPatch()` in [src/telemetry/allowlist.mjs](../src/telemetry/allowlist.mjs).
+- **Local HTTP service & Magpie sandbox**:
+  - `page/index.html` and `page/boot.js` run under `sandbox="allow-scripts"` and `connect-src 'none'`: zero inline scripts, zero `fetch`/`XHR`/`WebSocket`/`localStorage`/`cookie` usage, navigating only via `location.replace`.
+  - [src/server/http-server.mjs](../src/server/http-server.mjs) binds strictly to `127.0.0.1`, enforces loopback client address, `Host`, and `Origin` checks, requires `Sec-Fetch-Mode: navigate` on token-bearing `GET /` / `GET /index.html` (never returning `Set-Cookie` or `Access-Control-Allow-Origin`), authenticates `/api/*` via per-process `X-Usage-Monitor-Token`, and recovers from `EADDRINUSE` during Magpie rolling restarts in the background.
+  - All frontend asset and API calls in `src/ui/` must use relative `./` paths via `window.sidecar.fetch` and safe DOM construction (`textContent`, never injecting untrusted telemetry strings into `innerHTML`).
 - **Isolated persistence**: Runtime caches, SQLite ledgers, and preferences are written only inside `DATA_DIR` (resolved via [src/runtime/paths.mjs](../src/runtime/paths.mjs)), never inside `~/.gemini` or `~/.config/magpie`.
 
 ## Testing standards

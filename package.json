@@ -1,0 +1,51 @@
+{
+  "name": "magpie-antigravity-monitor",
+  "version": "0.1.0",
+  "description": "Strictly read-only Google Antigravity token usage, speed, context, and quota monitor page plugin for Magpie.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "main": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "page",
+    "src",
+    "data",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-page",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "antigravity",
+    "usage-monitor"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haoyuqi/magpie-antigravity-monitor.git"
+  },
+  "engines": {
+    "magpie": ">=0.1.1340"
+  },
+  "magpie": {
+    "page": {
+      "title": "Antigravity Monitor",
+      "file": "page/index.html",
+      "icon": "page/icon.svg",
+      "service": {
+        "port": 18787,
+        "option": "port"
+      }
+    },
+    "options": {
+      "port": 18787
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:bun": "bun test test/"
+  }
+}
