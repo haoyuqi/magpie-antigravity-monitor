@@ -220,14 +220,21 @@ describe('UI telemetry view-model', () => {
     ]);
   });
 
-  it('guards 401 auto-reload with a cooldown to recover once without reload loops', () => {
-    const first = shouldAutoReloadOn401('', 100000, 10000);
+  it('guards 401 auto-reload with cooldown and unsaved-draft checks', () => {
+    const first = shouldAutoReloadOn401('', 100000, 10000, false);
     assert.equal(first.shouldReload, true);
+    assert.equal(first.reason, 'ok');
 
-    const withinCooldown = shouldAutoReloadOn401(first.nextWindowName, 105000, 10000);
+    const withDraft = shouldAutoReloadOn401('', 100000, 10000, true);
+    assert.equal(withDraft.shouldReload, false);
+    assert.equal(withDraft.reason, 'unsaved-draft');
+
+    const withinCooldown = shouldAutoReloadOn401(first.nextWindowName, 105000, 10000, false);
     assert.equal(withinCooldown.shouldReload, false);
+    assert.equal(withinCooldown.reason, 'cooldown');
 
-    const afterCooldown = shouldAutoReloadOn401(first.nextWindowName, 115000, 10000);
+    const afterCooldown = shouldAutoReloadOn401(first.nextWindowName, 115000, 10000, false);
     assert.equal(afterCooldown.shouldReload, true);
+    assert.equal(afterCooldown.reason, 'ok');
   });
 });

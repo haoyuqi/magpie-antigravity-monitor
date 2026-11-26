@@ -2472,6 +2472,40 @@ export async function buildTelemetryPayloadInternal(
   const endpointSig = isRemote
     ? `${Number(endpoint?.instanceId || 0)}|${String(endpoint?.baseUrl || '')}|${String(endpoint?.csrfToken || '')}`
     : String(lsRuntimeEndpoint.addr || '');
+  const completedSnapshot = {
+    endpointId,
+    isRemote,
+    endpointSig,
+    weeklyLimitMode: settings.weeklyLimitMode,
+    weeklyTokenBudget: settings.weeklyTokenBudget,
+    weeklyCostBudget: settings.weeklyCostBudget,
+    catalogRevision: modelInputs.catalogRevision,
+    phaseEpoch: modelInputs.phaseEpoch,
+    basePayload: finalPayload,
+    sessions: {
+      conversations,
+    },
+    knownUpstreamByModelKey,
+    quotaContext: {
+      quotaPoolsMap,
+      isCustomWeeklyMode,
+      weekBucket,
+      quotaWeekBucket,
+      poolsWeeklySummary,
+    },
+    aggContext: {
+      cycleAnchors,
+      isCustomWeeklyMode,
+      currentAccountName: accountScope,
+      activeCascadeId,
+      activeFamilyCascadeIds,
+      resolveStepModel,
+      quotaPoolsMap,
+      modelInputs,
+      endpoint,
+    },
+  };
+
   if (buildGen === telemetryMemoGeneration) {
     lastCompletedTelemetrySnapshotsByEndpoint.delete(endpointId);
     if (lastCompletedTelemetrySnapshotsByEndpoint.size >= MAX_TELEMETRY_SNAPSHOT_ENDPOINTS) {
@@ -2480,38 +2514,14 @@ export async function buildTelemetryPayloadInternal(
         lastCompletedTelemetrySnapshotsByEndpoint.delete(oldestKey);
       }
     }
-    lastCompletedTelemetrySnapshotsByEndpoint.set(endpointId, {
-      endpointId,
-      isRemote,
-      endpointSig,
-      weeklyLimitMode: settings.weeklyLimitMode,
-      weeklyTokenBudget: settings.weeklyTokenBudget,
-      weeklyCostBudget: settings.weeklyCostBudget,
-      catalogRevision: modelInputs.catalogRevision,
-      phaseEpoch: modelInputs.phaseEpoch,
-      basePayload: finalPayload,
-      sessions: {
-        conversations,
-      },
-      knownUpstreamByModelKey,
-      quotaContext: {
-        quotaPoolsMap,
-        isCustomWeeklyMode,
-        weekBucket,
-        quotaWeekBucket,
-        poolsWeeklySummary,
-      },
-      aggContext: {
-        cycleAnchors,
-        isCustomWeeklyMode,
-        currentAccountName: accountScope,
-        activeCascadeId,
-        activeFamilyCascadeIds,
-        resolveStepModel,
-        quotaPoolsMap,
-        modelInputs,
-        endpoint,
-      },
+    lastCompletedTelemetrySnapshotsByEndpoint.set(endpointId, completedSnapshot);
+  }
+
+  if (filterOpts?._attachSnapshot === true) {
+    Object.defineProperty(finalPayload, COMPLETED_SNAPSHOT_SYM, {
+      value: completedSnapshot,
+      enumerable: false,
+      configurable: true,
     });
   }
 
@@ -2881,10 +2891,10 @@ function tryBuildFastConsumptionPayload(filterOpts = {}) {
   };
 }
 
-function tryBuildConsumptionPresetsPayload(filterOpts = {}) {
-  const endpoint = filterOpts?.endpoint && filterOpts.endpoint.isRemote ? filterOpts.endpoint : null;
-  const snap = resolveValidFastSnapshot(endpoint);
-  if (!snap) return null;
+const COMPLETED_SNAPSHOT_SYM = Symbol('completedTelemetrySnapshot');
+
+function buildConsumptionPresetsPayloadFromSnapshot(snap, endpoint = null) {
+  if (!snap || !snap.basePayload || !snap.aggContext) return null;
   const bundle = aggregateConsumptionPresetBundle({
     ...snap.aggContext,
     endpoint,
@@ -2908,6 +2918,12 @@ function tryBuildConsumptionPresetsPayload(filterOpts = {}) {
     usageRevision: bundle.usageRevision,
     ranges: enrichedRanges,
   };
+}
+
+function tryBuildConsumptionPresetsPayload(filterOpts = {}) {
+  const endpoint = filterOpts?.endpoint && filterOpts.endpoint.isRemote ? filterOpts.endpoint : null;
+  const snap = resolveValidFastSnapshot(endpoint);
+  return buildConsumptionPresetsPayloadFromSnapshot(snap, endpoint);
 }
 
 export function buildCliStatusSnapshot(finalPayload, updatedAtMs = Date.now()) {
@@ -3014,10 +3030,25 @@ export function buildTelemetryPayload(
         return inFlightRequests.get(key);
       }
       const coldFilterOpts = filterOpts?.endpoint
-        ? { range: 'today', endpoint: filterOpts.endpoint }
-        : { range: 'today' };
+        ? { range: 'today', endpoint: filterOpts.endpoint, _attachSnapshot: true }
+        : { range: 'today', _attachSnapshot: true };
+      const endpointObj = filterOpts?.endpoint?.isRemote ? filterOpts.endpoint : null;
       const p = buildTelemetryPayloadInternal(requestedConvId, false, coldFilterOpts)
-        .then(() => tryBuildConsumptionPresetsPayload(filterOpts))
+        .then(async (firstPayload) => {
+          const fast = tryBuildConsumptionPresetsPayload(filterOpts);
+          if (fast) return fast;
+          // If invalidated mid-flight by clearTelemetryBuilderMemo(), rebuild once under the new generation
+          const retryPayload = await buildTelemetryPayloadInternal(
+            requestedConvId,
+            false,
+            coldFilterOpts
+          );
+          const retried = tryBuildConsumptionPresetsPayload(filterOpts);
+          if (retried) return retried;
+          const fallbackSnap =
+            retryPayload?.[COMPLETED_SNAPSHOT_SYM] || firstPayload?.[COMPLETED_SNAPSHOT_SYM] || null;
+          return buildConsumptionPresetsPayloadFromSnapshot(fallbackSnap, endpointObj);
+        })
         .finally(() => {
           if (inFlightRequests.get(key) === p) {
             inFlightRequests.delete(key);

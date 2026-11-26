@@ -45,6 +45,14 @@ describe('plugin manifest, sandbox launcher, and EADDRINUSE lifecycle', () => {
     // Empty input.directory without env must fall back to os.tmpdir(), never REPO_ROOT/.data
     const fallbackDir = resolvePluginDataDir({}, {});
     assert.equal(fallbackDir.startsWith(REPO_ROOT), false);
+
+    // index.mjs must install bun-sqlite-shim BEFORE importing http-server/telemetry/paths
+    const indexSrc = readFileSync(join(REPO_ROOT, 'index.mjs'), 'utf8');
+    const shimIdx = indexSrc.indexOf("import('./src/runtime/bun-sqlite-shim.mjs')");
+    const serverIdx = indexSrc.indexOf("import('./src/server/http-server.mjs')");
+    assert.ok(shimIdx > 0);
+    assert.ok(serverIdx > shimIdx);
+    assert.equal(indexSrc.includes("import('./src/telemetry/index.mjs')"), false);
   });
 
   it('enforces Magpie sandbox invariants on page/index.html and page/boot.js', () => {

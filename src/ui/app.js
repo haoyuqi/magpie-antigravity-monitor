@@ -159,14 +159,18 @@ import {
       clearTimeout(state.pollTimer);
       state.pollTimer = null;
     }
-    const check = shouldAutoReloadOn401(window.name, Date.now(), 10000);
+    const hasUnsavedDraft = state.settingsDirty || isFocusInsideSettingsForm();
+    const check = shouldAutoReloadOn401(window.name, Date.now(), 10000, hasUnsavedDraft);
     if (check.shouldReload) {
       window.name = check.nextWindowName;
       window.location.reload();
       return true;
     }
     state.authExpired = true;
-    state.error = 'Monitor service restarted with a new session token. Reload to reconnect.';
+    state.error =
+      check.reason === 'unsaved-draft'
+        ? 'Monitor service restarted with a new session token. Save or copy your unsaved Settings draft, then reload.'
+        : 'Monitor service restarted with a new session token. Reload to reconnect.';
     renderBanner();
     return false;
   }

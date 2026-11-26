@@ -53,7 +53,8 @@ function start(input, options) {
   if (!started) {
     started = (async () => {
       process.env.USAGE_MONITOR_DATA_DIR = resolvePluginDataDir(input, process.env);
-      const { installBunSqliteShim } = await import('./src/telemetry/index.mjs');
+      // Install bun:sqlite -> DatabaseSync BEFORE importing paths.mjs / telemetry-store
+      const { installBunSqliteShim } = await import('./src/runtime/bun-sqlite-shim.mjs');
       await installBunSqliteShim();
       const { startMonitorHttpServer } = await import('./src/server/http-server.mjs');
       const port = resolvePort(options);

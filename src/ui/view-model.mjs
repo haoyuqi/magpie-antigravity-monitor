@@ -291,23 +291,33 @@ const AUTH_RELOAD_PREFIX = 'ag_mon_auth_reload:';
 
 /**
  * Decides whether a 401 response after a rolling server restart should trigger a one-shot
- * page reload (to fetch the new per-process token from `GET /`), with a cooldown guard.
+ * page reload (to fetch the new per-process token from `GET /`), with cooldown and unsaved-draft guards.
  *
  * @param {string} windowName
  * @param {number} [nowMs=Date.now()]
  * @param {number} [cooldownMs=10000]
- * @returns {{ shouldReload: boolean, nextWindowName: string }}
+ * @param {boolean} [hasUnsavedDraft=false]
+ * @returns {{ shouldReload: boolean, reason: 'ok' | 'cooldown' | 'unsaved-draft', nextWindowName: string }}
  */
-export function shouldAutoReloadOn401(windowName, nowMs = Date.now(), cooldownMs = 10000) {
+export function shouldAutoReloadOn401(
+  windowName,
+  nowMs = Date.now(),
+  cooldownMs = 10000,
+  hasUnsavedDraft = false
+) {
   const raw = String(windowName || '');
+  if (hasUnsavedDraft) {
+    return { shouldReload: false, reason: 'unsaved-draft', nextWindowName: raw };
+  }
   const prevMs = raw.startsWith(AUTH_RELOAD_PREFIX)
     ? Number(raw.slice(AUTH_RELOAD_PREFIX.length))
     : 0;
   if (Number.isFinite(prevMs) && prevMs > 0 && nowMs - prevMs <= cooldownMs) {
-    return { shouldReload: false, nextWindowName: raw };
+    return { shouldReload: false, reason: 'cooldown', nextWindowName: raw };
   }
   return {
     shouldReload: true,
+    reason: 'ok',
     nextWindowName: `${AUTH_RELOAD_PREFIX}${nowMs}`,
   };
 }
