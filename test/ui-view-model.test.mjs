@@ -9,6 +9,7 @@ import {
   extractWorkspaceRows,
   getAgentViews,
   normalizeQuotaPoolView,
+  normalizeWeeklyQuotaView,
 } from '../src/ui/view-model.mjs';
 
 describe('UI telemetry view-model', () => {
@@ -54,6 +55,23 @@ describe('UI telemetry view-model', () => {
     assert.equal(weeklyOnlyPool.weeklyPct, 82.5);
     assert.equal(weeklyOnlyPool.primaryWindow, 'weekly');
     assert.equal(weeklyOnlyPool.primaryPct, 82.5);
+
+    const customWeekly = normalizeWeeklyQuotaView({
+      isOfficial: false,
+      title: 'Weekly Limit (Custom Local)',
+      calls: 12,
+      tokens: 45000,
+      costUsd: 0.75,
+      usedPct: 25,
+      remainingPct: 75,
+      resetTime: '2099-01-07T00:00:00Z',
+    });
+    assert.equal(customWeekly.isOfficial, false);
+    assert.equal(customWeekly.title, 'Weekly Limit (Custom Local)');
+    assert.equal(customWeekly.remainingPct, 75);
+    assert.equal(customWeekly.calls, 12);
+    assert.equal(customWeekly.tokens, 45000);
+    assert.equal(customWeekly.costUsd, 0.75);
   });
 
   it('extracts all 10 flat context channels from telemetry-builder context object', () => {
@@ -82,7 +100,7 @@ describe('UI telemetry view-model', () => {
     assert.equal(res.freshInputTokens, 600);
   });
 
-  it('collects newest-first steps across agents[] without dropping subagent or newest steps', () => {
+  it('collects newest-first steps from activeConversation.recentSteps and subagent agents[]', () => {
     const mainSteps = [];
     for (let i = 220; i >= 1; i--) {
       mainSteps.push({
@@ -109,10 +127,25 @@ describe('UI telemetry view-model', () => {
         modelShort: '2.5 Flash',
       },
     ];
+
+    // Single-agent backend shape: agents[0] omits recentSteps, main steps live on activeConversation.recentSteps
+    const singleAgentConv = {
+      recentSteps: mainSteps,
+      agents: [{ agentId: 'main', isMain: true, shortLabel: 'Main Agent', badgeText: 'M' }],
+    };
+    const singleAll = collectOrderedAgentSteps(singleAgentConv, 'all', 200);
+    const singleMain = collectOrderedAgentSteps(singleAgentConv, 'main', 200);
+    assert.equal(singleAll.length, 200);
+    assert.equal(singleAll[0].stepIndex, 220);
+    assert.equal(singleMain.length, 200);
+    assert.equal(singleMain[0].stepIndex, 220);
+
+    // Multi-agent backend shape: main steps on activeConversation.recentSteps, subagent steps on agents[1].recentSteps
     const activeConversation = {
+      recentSteps: mainSteps,
       agents: [
-        { agentId: 'main', shortLabel: 'Main Agent', badgeText: 'M', recentSteps: mainSteps },
-        { agentId: 'subagent-1', shortLabel: 'Subagent #1', badgeText: 'S1', recentSteps: subSteps },
+        { agentId: 'main', isMain: true, shortLabel: 'Main Agent', badgeText: 'M' },
+        { agentId: 'subagent-1', isMain: false, shortLabel: 'Subagent #1', badgeText: 'S1', recentSteps: subSteps },
       ],
     };
 
@@ -124,6 +157,10 @@ describe('UI telemetry view-model', () => {
     assert.equal(allTop[0].stepIndex, 5);
     assert.equal(allTop[1].agentId, 'main');
     assert.equal(allTop[1].stepIndex, 220);
+
+    const mainOnly = collectOrderedAgentSteps(activeConversation, 'main', 200);
+    assert.equal(mainOnly.length, 200);
+    assert.equal(mainOnly[0].stepIndex, 220);
 
     const subOnly = collectOrderedAgentSteps(activeConversation, 'subagent-1', 200);
     assert.equal(subOnly.length, 2);

@@ -7,6 +7,7 @@ import {
   extractWorkspaceRows,
   getAgentViews,
   normalizeQuotaPoolView,
+  normalizeWeeklyQuotaView,
 } from './view-model.mjs';
 
 (() => {
@@ -47,6 +48,11 @@ import {
     statusMessage: '',
     pollTimer: null,
     inFlight: null,
+    requestSeq: 0,
+    activeRequestKey: '',
+    abortController: null,
+    settingsDirty: false,
+    settingsRendered: false,
   };
 
   function h(tag, attrs = {}, children = []) {
@@ -156,8 +162,24 @@ import {
     document.documentElement.style.setProperty('--scale', scale);
   }
 
-  async function fetchTelemetry({ force = false } = {}) {
-    if (state.inFlight && !force) return state.inFlight;
+  async function fetchTelemetry({ force = false, userTriggered = false } = {}) {
+    const queryKey = `${state.selectedConvId || ''}::${state.selectedRange || 'all'}`;
+    if (state.inFlight && !force && !userTriggered && state.activeRequestKey === queryKey) {
+      return state.inFlight;
+    }
+
+    if (state.abortController) {
+      try {
+        state.abortController.abort();
+      } catch {
+        // Ignore abort errors
+      }
+    }
+
+    const reqId = ++state.requestSeq;
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    state.abortController = controller;
+    state.activeRequestKey = queryKey;
     state.loading = true;
     renderHeader();
 
@@ -166,23 +188,30 @@ import {
     if (state.selectedRange) params.set('range', state.selectedRange);
     if (force) params.set('force', '1');
 
-    const req = apiFetch(`./api/telemetry?${params.toString()}`)
+    const req = apiFetch(
+      `./api/telemetry?${params.toString()}`,
+      controller ? { signal: controller.signal } : {}
+    )
       .then((payload) => {
+        if (reqId !== state.requestSeq) return;
         state.payload = payload;
         state.error = '';
         if (!state.selectedConvId && payload?.activeConversation?.cascadeId) {
           state.selectedConvId = payload.activeConversation.cascadeId;
         }
         applySettingsAppearance(payload?.settings);
-        renderAll();
+        renderAll({ preserveSettingsForm: true });
       })
       .catch((err) => {
+        if (reqId !== state.requestSeq || err?.name === 'AbortError') return;
         state.error = err?.message || 'Failed to load telemetry';
         renderBanner();
       })
       .finally(() => {
+        if (reqId !== state.requestSeq) return;
         state.loading = false;
         state.inFlight = null;
+        state.abortController = null;
         renderHeader();
         schedulePoll();
       });
@@ -279,52 +308,98 @@ import {
     const root = document.getElementById('tab-overview');
     root.replaceChildren();
     const ac = state.payload?.activeConversation;
-    if (!ac || !ac.cascadeId) {
+    const hasActiveConv = Boolean(ac && ac.cascadeId);
+
+    if (hasActiveConv) {
+      const view = getSelectedContextView() || ac;
+      const ctx = view.context || ac.context || {};
+      const limitTok = Number(ctx.compactionLimitTokens || ctx.limitTokens || 0);
+      const totalTok = Number(ctx.totalTokens || 0);
+      const fillPct = limitTok > 0 ? Math.min(100, (totalTok / limitTok) * 100) : null;
+
+      root.appendChild(
+        h('div', { className: 'grid-kpi' }, [
+          kpiCard('Output Speed', fmtSpeed(view.latestTokPerSec), `Avg: ${fmtSpeed(view.avgTokPerSec)}`),
+          kpiCard('TTFT', fmtSec(view.latestTtftSec), `Last known: ${fmtSec(view.lastKnownTtftSec)}`),
+          kpiCard('Cache Hit Rate', fmtPct(view.latestCacheHitPct), `${fmtInt(view.stepCount)} steps`),
+          kpiCard(
+            'Session Cost',
+            fmtUsd(view.sessionCostUsd),
+            `Latest step: ${fmtUsd(view.latestStepCostUsd)}`
+          ),
+          kpiCard(
+            'Context Fill',
+            fillPct !== null ? fmtPct(fillPct) : fmtTokens(totalTok),
+            limitTok > 0 ? `${fmtTokens(totalTok)} / ${fmtTokens(limitTok)}` : fmtTokens(totalTok)
+          ),
+        ])
+      );
+    } else {
       root.appendChild(
         h('div', {
           className: 'card empty-state',
           textContent: 'No Antigravity conversations detected yet.',
         })
       );
-      return;
     }
 
-    const view = getSelectedContextView() || ac;
-    const ctx = view.context || ac.context || {};
-    const limitTok = Number(ctx.compactionLimitTokens || ctx.limitTokens || 0);
-    const totalTok = Number(ctx.totalTokens || 0);
-    const fillPct = limitTok > 0 ? Math.min(100, (totalTok / limitTok) * 100) : null;
-
-    root.appendChild(
-      h('div', { className: 'grid-kpi' }, [
-        kpiCard('Output Speed', fmtSpeed(view.latestTokPerSec), `Avg: ${fmtSpeed(view.avgTokPerSec)}`),
-        kpiCard('TTFT', fmtSec(view.latestTtftSec), `Last known: ${fmtSec(view.lastKnownTtftSec)}`),
-        kpiCard('Cache Hit Rate', fmtPct(view.latestCacheHitPct), `${fmtInt(view.stepCount)} steps`),
-        kpiCard(
-          'Session Cost',
-          fmtUsd(view.sessionCostUsd),
-          `Latest step: ${fmtUsd(view.latestStepCostUsd)}`
-        ),
-        kpiCard(
-          'Context Fill',
-          fillPct !== null ? fmtPct(fillPct) : fmtTokens(totalTok),
-          limitTok > 0 ? `${fmtTokens(totalTok)} / ${fmtTokens(limitTok)}` : fmtTokens(totalTok)
-        ),
-      ])
-    );
-
-    // Quota pools card
+    // Quota pools & weekly summary card (rendered even when no conversation is active)
     const pools = state.payload?.quotas?.pools || [];
+    const weekly = normalizeWeeklyQuotaView(state.payload?.quotas?.weekly);
     const quotaCard = h('div', { className: 'card' });
     quotaCard.appendChild(
       h('div', { className: 'card-header' }, [
-        h('h2', { className: 'card-title', textContent: 'Official Quota Pools' }),
+        h('h2', { className: 'card-title', textContent: 'Quota & Weekly Budget' }),
         h('span', {
           className: 'muted',
           textContent: state.payload?.quotas?.meta?.errorMessage || '5h & Weekly Windows',
         }),
       ])
     );
+
+    if (weekly) {
+      const wkPct = weekly.remainingPct;
+      const wkFillCls =
+        wkPct !== null && wkPct <= 15
+          ? 'progress-fill is-danger'
+          : wkPct !== null && wkPct <= 35
+            ? 'progress-fill is-warn'
+            : 'progress-fill';
+      quotaCard.appendChild(
+        h('div', { className: 'quota-item', style: 'margin-bottom:10px;' }, [
+          h('div', { className: 'quota-row' }, [
+            h('strong', { textContent: weekly.title }),
+            h('span', {
+              className: weekly.isOfficial ? 'pill pill-ok' : 'pill pill-accent',
+              textContent:
+                wkPct !== null
+                  ? `${wkPct.toFixed(1)}% left`
+                  : weekly.isOfficial
+                    ? 'Official'
+                    : 'Local',
+            }),
+          ]),
+          ...(wkPct !== null
+            ? [
+                h('div', { className: 'progress-track' }, [
+                  h('div', { className: wkFillCls, style: `width:${wkPct}%` }),
+                ]),
+              ]
+            : []),
+          h('div', { className: 'quota-row', style: 'margin-top:6px;margin-bottom:0;' }, [
+            h('span', {
+              className: 'muted',
+              textContent: `${fmtTokens(weekly.tokens)} tokens · ${fmtInt(weekly.calls)} calls · ${fmtUsd(weekly.costUsd)}`,
+            }),
+            h('span', {
+              className: 'muted',
+              textContent: weekly.resetTime ? `Reset ${fmtRemainingTime(weekly.resetTime)}` : '',
+            }),
+          ]),
+        ])
+      );
+    }
+
     if (pools.length === 0) {
       quotaCard.appendChild(
         h('div', {
@@ -372,6 +447,13 @@ import {
       quotaCard.appendChild(list);
     }
     root.appendChild(quotaCard);
+
+    if (!hasActiveConv) {
+      return;
+    }
+
+    const view = getSelectedContextView() || ac;
+    const ctx = view.context || ac.context || {};
 
     // 10-channel context breakdown
     const ctxCard = h('div', { className: 'card' });
@@ -564,7 +646,8 @@ import {
           textContent: opt.label,
           onClick: () => {
             state.selectedRange = opt.key;
-            fetchTelemetry();
+            renderAnalyticsTab();
+            fetchTelemetry({ userTriggered: true });
           },
         })
       )
@@ -707,6 +790,14 @@ import {
       h('option', { value: 'xl', textContent: 'Extra Large (xl)', selected: settings.fontScale === 'xl' }),
     ]);
 
+    const markDirty = () => {
+      state.settingsDirty = true;
+    };
+    for (const inputEl of [modeSelect, tokenInput, costInput, accentSelect, scaleSelect]) {
+      inputEl.addEventListener('input', markDirty);
+      inputEl.addEventListener('change', markDirty);
+    }
+
     const saveBtn = h('button', {
       type: 'button',
       className: 'btn btn-primary',
@@ -723,10 +814,13 @@ import {
               fontScale: scaleSelect.value,
             }),
           });
+          state.settingsDirty = false;
+          if (state.payload) state.payload.settings = res.settings;
           applySettingsAppearance(res.settings);
           state.statusMessage = 'Preferences saved.';
           renderBanner();
-          fetchTelemetry();
+          renderSettingsTab();
+          fetchTelemetry({ userTriggered: true });
         } catch (err) {
           state.error = err?.message || 'Failed to save preferences';
           renderBanner();
@@ -753,11 +847,19 @@ import {
             className: 'btn',
             textContent: 'Reset Defaults',
             onClick: async () => {
-              const res = await apiFetch('./api/settings/reset', { method: 'POST', body: '{}' });
-              applySettingsAppearance(res.settings);
-              state.statusMessage = 'Preferences reset to defaults.';
-              renderBanner();
-              fetchTelemetry();
+              try {
+                const res = await apiFetch('./api/settings/reset', { method: 'POST', body: '{}' });
+                state.settingsDirty = false;
+                if (state.payload) state.payload.settings = res.settings;
+                applySettingsAppearance(res.settings);
+                state.statusMessage = 'Preferences reset to defaults.';
+                renderBanner();
+                renderSettingsTab();
+                fetchTelemetry({ userTriggered: true });
+              } catch (err) {
+                state.error = err?.message || 'Failed to reset preferences';
+                renderBanner();
+              }
             },
           }),
         ]),
@@ -766,6 +868,7 @@ import {
 
     const logBox = h('pre', {
       className: 'log-pre',
+      id: 'reservation-log-pre',
       textContent: state.reservationLog
         ? JSON.stringify(state.reservationLog, null, 2)
         : 'Click "Load Reservation Log" to inspect local quota lease estimates.',
@@ -781,18 +884,23 @@ import {
             type: 'button',
             className: 'btn',
             textContent: 'Force Quota Refresh',
-            onClick: () => fetchTelemetry({ force: true }),
+            onClick: () => fetchTelemetry({ force: true, userTriggered: true }),
           }),
           h('button', {
             type: 'button',
             className: 'btn',
             textContent: 'Sync Pricing Catalog',
             onClick: async () => {
-              const res = await apiFetch('./api/cloud-sync', { method: 'POST', body: '{}' });
-              state.statusMessage = res?.cloudStatus?.lastSyncError
-                ? `Catalog sync failed: ${res.cloudStatus.lastSyncError}`
-                : 'Pricing catalog synced.';
-              renderBanner();
+              try {
+                const res = await apiFetch('./api/cloud-sync', { method: 'POST', body: '{}' });
+                state.statusMessage = res?.cloudStatus?.lastSyncError
+                  ? `Catalog sync failed: ${res.cloudStatus.lastSyncError}`
+                  : 'Pricing catalog synced.';
+                renderBanner();
+              } catch (err) {
+                state.error = err?.message || 'Failed to sync pricing catalog';
+                renderBanner();
+              }
             },
           }),
           h('button', {
@@ -800,10 +908,15 @@ import {
             className: 'btn',
             textContent: 'Rebuild Local Cache',
             onClick: async () => {
-              await apiFetch('./api/cache/rebuild', { method: 'POST', body: '{}' });
-              state.statusMessage = 'Local cache rebuilt.';
-              renderBanner();
-              fetchTelemetry();
+              try {
+                await apiFetch('./api/cache/rebuild', { method: 'POST', body: '{}' });
+                state.statusMessage = 'Local cache rebuilt.';
+                renderBanner();
+                fetchTelemetry({ userTriggered: true });
+              } catch (err) {
+                state.error = err?.message || 'Failed to rebuild local cache';
+                renderBanner();
+              }
             },
           }),
           h('button', {
@@ -811,23 +924,36 @@ import {
             className: 'btn',
             textContent: 'Load Reservation Log',
             onClick: async () => {
-              state.reservationLog = await apiFetch('./api/quota-reservation/log');
-              renderSettingsTab();
+              try {
+                state.reservationLog = await apiFetch('./api/quota-reservation/log');
+                logBox.textContent = JSON.stringify(state.reservationLog, null, 2);
+              } catch (err) {
+                state.error = err?.message || 'Failed to load reservation log';
+                renderBanner();
+              }
             },
           }),
         ]),
         logBox,
       ])
     );
+    state.settingsRendered = true;
   }
 
-  function renderAll() {
+  function isFocusInsideSettingsForm() {
+    const settingsRoot = document.getElementById('tab-settings');
+    return Boolean(settingsRoot && document.activeElement && settingsRoot.contains(document.activeElement));
+  }
+
+  function renderAll({ preserveSettingsForm = false } = {}) {
     renderHeader();
     renderBanner();
     renderOverviewTab();
     renderStepsTab();
     renderAnalyticsTab();
-    renderSettingsTab();
+    if (!state.settingsRendered || !preserveSettingsForm || (!state.settingsDirty && !isFocusInsideSettingsForm())) {
+      renderSettingsTab();
+    }
   }
 
   function setupEvents() {
@@ -850,11 +976,11 @@ import {
       state.selectedConvId = ev.target.value;
       state.selectedAgentId = 'main';
       state.stepFilterAgent = 'all';
-      fetchTelemetry();
+      fetchTelemetry({ userTriggered: true });
     });
 
     document.getElementById('refresh-btn').addEventListener('click', () => {
-      fetchTelemetry({ force: true });
+      fetchTelemetry({ force: true, userTriggered: true });
     });
 
     document.addEventListener('visibilitychange', () => {

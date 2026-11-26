@@ -90,6 +90,38 @@ export function normalizeQuotaPoolView(pool, activePoolKey = '') {
 }
 
 /**
+ * Normalizes `quotas.weekly` summary (official weekly window or custom local weekly budget).
+ *
+ * @param {object|null|undefined} weekly
+ */
+export function normalizeWeeklyQuotaView(weekly) {
+  if (!weekly || typeof weekly !== 'object') return null;
+  const hasRemaining =
+    weekly.remainingPct !== null &&
+    weekly.remainingPct !== undefined &&
+    Number.isFinite(Number(weekly.remainingPct));
+  const remainingPct = hasRemaining
+    ? Math.max(0, Math.min(100, Number(weekly.remainingPct)))
+    : null;
+  const usedPct =
+    weekly.usedPct !== null &&
+    weekly.usedPct !== undefined &&
+    Number.isFinite(Number(weekly.usedPct))
+      ? Math.max(0, Math.min(100, Number(weekly.usedPct)))
+      : null;
+  return {
+    title: String(weekly.title || 'Weekly Limit'),
+    isOfficial: Boolean(weekly.isOfficial),
+    remainingPct,
+    usedPct,
+    calls: Number(weekly.calls || 0) || 0,
+    tokens: Number(weekly.tokens || 0) || 0,
+    costUsd: Number(weekly.costUsd || 0) || 0,
+    resetTime: weekly.resetTime || '',
+  };
+}
+
+/**
  * Returns normalized agent views from `activeConversation.agents`.
  *
  * @param {object|null|undefined} activeConversation
@@ -100,8 +132,28 @@ export function getAgentViews(activeConversation) {
   return Array.isArray(agents) ? agents : [];
 }
 
+function getAgentSteps(activeConversation, agent) {
+  if (Array.isArray(agent?.recentSteps)) {
+    return agent.recentSteps;
+  }
+  if (agent?.isMain || agent?.agentId === 'main') {
+    return Array.isArray(activeConversation?.recentSteps) ? activeConversation.recentSteps : [];
+  }
+  return [];
+}
+
+function normalizeStepAgentFields(st, agent) {
+  return {
+    ...st,
+    agentId: st.agentId || agent?.agentId || 'main',
+    agentBadge: st.agentBadge || agent?.badgeText || 'M',
+    agentLabel: st.agentLabel || agent?.shortLabel || agent?.role || 'Main Agent',
+  };
+}
+
 /**
- * Collects newest-first steps across one or all agents without dropping subagent or latest steps.
+ * Collects newest-first steps across one or all agents, reading main-agent steps from
+ * `activeConversation.recentSteps` when `agents[0]` omits `recentSteps`.
  *
  * @param {object|null|undefined} activeConversation
  * @param {string} [filterAgentId='all']
@@ -118,9 +170,14 @@ export function collectOrderedAgentSteps(
   const limit = Math.max(1, Number(maxItems) || 200);
 
   if (filterAgentId && filterAgentId !== 'all') {
-    const target = agents.find((a) => a.agentId === filterAgentId);
-    const list = Array.isArray(target?.recentSteps) ? target.recentSteps : [];
-    return list.slice(0, limit);
+    const target = agents.find((a) => a.agentId === filterAgentId) || null;
+    const rawList = target
+      ? getAgentSteps(ac, target)
+      : filterAgentId === 'main' && Array.isArray(ac.recentSteps)
+        ? ac.recentSteps
+        : [];
+    const fallbackAgent = target || { agentId: 'main', badgeText: 'M', shortLabel: 'Main Agent' };
+    return rawList.slice(0, limit).map((st) => normalizeStepAgentFields(st, fallbackAgent));
   }
 
   if (agents.length === 0) {
@@ -129,15 +186,21 @@ export function collectOrderedAgentSteps(
   }
 
   const combined = [];
+  let includedMain = false;
   for (const agent of agents) {
-    const steps = Array.isArray(agent?.recentSteps) ? agent.recentSteps : [];
+    if (agent?.isMain || agent?.agentId === 'main') {
+      includedMain = true;
+    }
+    const steps = getAgentSteps(ac, agent);
     for (const st of steps) {
-      combined.push({
-        ...st,
-        agentId: st.agentId || agent.agentId || 'main',
-        agentBadge: st.agentBadge || agent.badgeText || 'M',
-        agentLabel: st.agentLabel || agent.shortLabel || agent.role || 'Main Agent',
-      });
+      combined.push(normalizeStepAgentFields(st, agent));
+    }
+  }
+  if (!includedMain && Array.isArray(ac.recentSteps) && ac.recentSteps.length > 0) {
+    for (const st of ac.recentSteps) {
+      combined.push(
+        normalizeStepAgentFields(st, { agentId: 'main', badgeText: 'M', shortLabel: 'Main Agent' })
+      );
     }
   }
   combined.sort(
