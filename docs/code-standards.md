@@ -10,9 +10,9 @@
 ## Structural read-only boundary
 
 - **No invasive host modules**: Modules that mutate Antigravity configs, inject CDP overlays, hijack CloudCode proxies, switch accounts, patch host i18n, or self-update plugins are excluded from the repository by design.
-- **Zero-sidecar SQLite reads**: Read-only queries on closed or orphaned WAL databases must never create `-wal`/`-shm` sidecars in Antigravity directories (use immutable URI / in-memory buffer under Bun, or temp-dir snapshot when replaying an orphaned `-wal`).
-- **Strict loopback Language Server RPC**: `ANTIGRAVITY_LS_ADDRESS` and `lsRuntimeEndpoint` must pass `isStrictLoopbackUrl()` before any `fetch`; `test.invalid` must never synthesize `http://test.invalid`.
-- **Shared catalog validation**: `syncCloudCatalog()` must validate payloads through `sanitizeCatalogPayload()` so sync and load agree on the `pricing` schema.
+- **Zero-sidecar SQLite reads**: Read-only queries must never open host WAL databases in-place or create `-wal`/`-shm` sidecars in Antigravity directories. Non-empty `-wal` databases are snapshotted into a short-lived temp dir before opening, while databases without a non-empty `-wal` use immutable URI / in-memory buffer reads.
+- **Strict loopback Language Server RPC**: `ANTIGRAVITY_LS_ADDRESS` and `lsRuntimeEndpoint` must pass `isStrictLoopbackUrl()` before any `fetch`; all loopback RPC and endpoint-probe `fetch` calls must set `redirect: 'error'`; `test.invalid` must never synthesize `http://test.invalid`.
+- **Shared catalog validation**: `syncCloudCatalog()` must validate payloads through `sanitizeCatalogPayload()` so sync and load agree on the `pricing` schema, and must check `saveJson()`'s boolean return value before updating sync success state.
 - **Fail-closed API allowlisting**: Every HTTP route and `/api/settings` patch must pass `isAllowedApiRoute()`, `!hasBlockedSettingsAction()`, and `sanitizeSettingsPatch()` in [src/telemetry/allowlist.mjs](../src/telemetry/allowlist.mjs).
 - **Isolated persistence**: Runtime caches, SQLite ledgers, and preferences are written only inside `DATA_DIR` (resolved via [src/runtime/paths.mjs](../src/runtime/paths.mjs)), never inside `~/.gemini` or `~/.config/magpie`.
 

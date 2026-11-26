@@ -393,6 +393,7 @@ async function probeLsCandidate(port, csrfToken, fetchFn, protos = ['http', 'htt
             'x-codeium-csrf-token': csrfToken,
           },
           body: '{}',
+          redirect: 'error',
           signal: AbortSignal.timeout(1500),
         }
       );

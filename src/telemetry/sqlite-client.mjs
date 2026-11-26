@@ -230,6 +230,11 @@ export function isSqliteBusyError(err) {
   return /SQLITE_BUSY|database is locked/i.test(msg);
 }
 
+function isSqliteTransientSnapshotError(err) {
+  const msg = String(err?.message || err?.code || '');
+  return /SQLITE_CORRUPT|SQLITE_NOTADB|SQLITE_IOERR|database disk image is malformed/i.test(msg);
+}
+
 function toImmutableSqliteUri(dbPath) {
   const url = pathToFileURL(resolve(dbPath));
   url.searchParams.set('immutable', '1');
@@ -250,34 +255,42 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
   if (!DatabaseSync) return null;
   if (!isSqliteDbReadyForRead(dbPath)) return null;
 
-  let walStat = null;
-  let shmStat = null;
-  try {
-    walStat = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
-    shmStat = statSync(`${dbPath}-shm`, { throwIfNoEntry: false });
-  } catch {
-    walStat = null;
-    shmStat = null;
-  }
-  const hasNonEmptyWal = Boolean(walStat && Number(walStat.size || 0) > 0);
-  const hasShm = Boolean(shmStat);
-
   for (let attempt = 0; attempt < 2; attempt++) {
     let db = null;
     let tempWalDir = '';
     try {
+      let walStat = null;
+      try {
+        walStat = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
+      } catch {
+        walStat = null;
+      }
+      const hasNonEmptyWal = Boolean(walStat && Number(walStat.size || 0) > 0);
+
       if (!hasNonEmptyWal) {
         db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
-      } else if (hasShm) {
-        db = new DatabaseSync(dbPath, { readOnly: true });
       } else {
-        // Non-empty -wal without -shm: snapshot both into a temp dir so SQLite
-        // can replay uncommitted WAL frames without creating sidecars in source dir.
+        // Non-empty -wal: snapshot .db and -wal into a temp dir so SQLite never
+        // opens the host DB in-place or creates -wal/-shm in the source directory.
         tempWalDir = mkdtempSync(join(tmpdir(), 'ag-mon-wal-'));
         const tempDbPath = join(tempWalDir, basename(dbPath));
         copyFileSync(dbPath, tempDbPath);
-        copyFileSync(`${dbPath}-wal`, `${tempDbPath}-wal`);
-        db = new DatabaseSync(tempDbPath, { readOnly: true });
+        let copiedWalNonEmpty = false;
+        try {
+          copyFileSync(`${dbPath}-wal`, `${tempDbPath}-wal`);
+          const copiedWalStat = statSync(`${tempDbPath}-wal`, { throwIfNoEntry: false });
+          copiedWalNonEmpty = Boolean(copiedWalStat && Number(copiedWalStat.size || 0) > 0);
+        } catch (copyErr) {
+          if (copyErr?.code !== 'ENOENT') {
+            throw copyErr;
+          }
+          copiedWalNonEmpty = false;
+        }
+        if (copiedWalNonEmpty) {
+          db = new DatabaseSync(tempDbPath, { readOnly: true });
+        } else {
+          db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
+        }
       }
       try {
         db.exec('PRAGMA busy_timeout = 1000;');
@@ -286,7 +299,7 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
       }
       return queryFn(db);
     } catch (err) {
-      if (attempt === 0 && isSqliteBusyError(err)) {
+      if (attempt === 0 && (isSqliteBusyError(err) || (tempWalDir && isSqliteTransientSnapshotError(err)))) {
         continue;
       }
       throw err;

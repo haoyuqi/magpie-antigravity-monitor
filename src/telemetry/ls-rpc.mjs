@@ -66,6 +66,7 @@ async function postLoopbackHttpsJson(urlStr, csrfToken, bodyText, timeoutMs) {
         ...(csrfToken ? { 'x-codeium-csrf-token': csrfToken } : {}),
       },
       body: bodyText,
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
   }
@@ -205,6 +206,7 @@ async function postLsRpcOnce(baseUrl, csrfToken, method, body, timeoutMs) {
       'x-codeium-csrf-token': csrfToken || '',
     },
     body: JSON.stringify(body),
+    redirect: 'error',
     signal: AbortSignal.timeout(timeoutMs),
   });
 }

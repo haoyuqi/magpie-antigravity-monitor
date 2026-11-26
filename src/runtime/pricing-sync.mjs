@@ -97,7 +97,10 @@ export async function syncCloudCatalog({ force = false, fetchFn = fetch } = {}) 
           fetchedAtMs: nowMs,
           sourceUrl: url,
         };
-        saveJson(REMOTE_CATALOG_CACHE_FILE, payload);
+        if (!saveJson(REMOTE_CATALOG_CACHE_FILE, payload)) {
+          lastErr = 'Failed to write pricing catalog cache';
+          continue;
+        }
         rebuildActiveCatalog();
         cloudSyncState.lastSuccessMs = nowMs;
         cloudSyncState.lastError = null;

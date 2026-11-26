@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -30,9 +30,11 @@ const {
   loadSettings,
 } = await import('../src/telemetry/index.mjs');
 const { callLsRpc } = await import('../src/telemetry/ls-rpc.mjs');
-const { parseLsArgsFromCommandLine, parseLinuxProcNetTcpPorts } = await import(
-  '../src/telemetry/ls-discovery.mjs'
-);
+const {
+  discoverAntigravityLsEndpoint,
+  parseLsArgsFromCommandLine,
+  parseLinuxProcNetTcpPorts,
+} = await import('../src/telemetry/ls-discovery.mjs');
 const { MODEL_PRICING } = await import('../src/telemetry/pricing-catalog.mjs');
 const { resolvePricingAt } = await import('../src/telemetry/model-pricing.mjs');
 
@@ -101,6 +103,59 @@ describe('read-only telemetry kernel', () => {
       lsRuntimeEndpoint.baseUrl = prevBaseUrl;
       lsRuntimeEndpoint.csrfToken = prevToken;
       lsRuntimeEndpoint.isDynamic = prevDynamic;
+    }
+  });
+
+  it('sets redirect: "error" on loopback RPC and endpoint-discovery fetch calls', async () => {
+    const prevFetch = globalThis.fetch;
+    const prevAddr = lsRuntimeEndpoint.addr;
+    const prevBaseUrl = lsRuntimeEndpoint.baseUrl;
+    const prevToken = lsRuntimeEndpoint.csrfToken;
+    const prevDynamic = lsRuntimeEndpoint.isDynamic;
+    const daemonDir = join(tempRoot, 'daemon');
+    mkdirSync(daemonDir, { recursive: true });
+    writeFileSync(
+      join(daemonDir, 'hub_12345.json'),
+      JSON.stringify({ pid: 12345, httpPort: 41234, csrfToken: 'tok-probe' }),
+      'utf8'
+    );
+
+    try {
+      const rpcRedirects = [];
+      globalThis.fetch = async (_url, init = {}) => {
+        rpcRedirects.push(init.redirect);
+        if (init.redirect === 'error') {
+          throw new TypeError('redirect blocked');
+        }
+        return new Response('{}', { status: 200 });
+      };
+
+      lsRuntimeEndpoint.addr = '127.0.0.1:41234';
+      lsRuntimeEndpoint.baseUrl = 'http://127.0.0.1:41234';
+      lsRuntimeEndpoint.csrfToken = 'tok-rpc';
+      await assert.rejects(() => callLsRpc('GetUserStatus'), /redirect blocked/);
+      assert.deepEqual(rpcRedirects, ['error']);
+
+      const probeRedirects = [];
+      const endpoint = await discoverAntigravityLsEndpoint({
+        daemonDirs: [daemonDir],
+        isPidAliveFn: () => true,
+        execCmdFn: async () => '',
+        fetchFn: async (_url, init = {}) => {
+          probeRedirects.push(init.redirect);
+          return new Response('{}', { status: 200 });
+        },
+      });
+      assert.ok(endpoint);
+      assert.equal(endpoint.baseUrl, 'http://127.0.0.1:41234');
+      assert.deepEqual(probeRedirects, ['error']);
+    } finally {
+      globalThis.fetch = prevFetch;
+      lsRuntimeEndpoint.addr = prevAddr;
+      lsRuntimeEndpoint.baseUrl = prevBaseUrl;
+      lsRuntimeEndpoint.csrfToken = prevToken;
+      lsRuntimeEndpoint.isDynamic = prevDynamic;
+      rmSync(daemonDir, { recursive: true, force: true });
     }
   });
 

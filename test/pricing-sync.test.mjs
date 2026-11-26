@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -69,5 +69,38 @@ describe('pricing-sync', () => {
     const status = await syncCloudCatalog({ force: true, fetchFn: badFetch });
     assert.equal(status.lastSyncError, 'Invalid pricing catalog schema');
     assert.equal(existsSync(REMOTE_CATALOG_CACHE_FILE), false);
+  });
+
+  it('reports sync failure when saveJson fails to write the cache file', async () => {
+    rmSync(REMOTE_CATALOG_CACHE_FILE, { recursive: true, force: true });
+    mkdirSync(REMOTE_CATALOG_CACHE_FILE, { recursive: true });
+    const prevSuccessMs = cloudSyncState.lastSuccessMs;
+    cloudSyncState.lastError = null;
+
+    const validFetch = async () =>
+      new Response(
+        JSON.stringify({
+          schemaVersion: 1,
+          catalogVersion: '2026.11.26.fail',
+          pricing: {
+            'test-write-fail-model': {
+              input: 1.0,
+              cache: 0.1,
+              output: 2.0,
+              short: 'fail-test',
+              family: 'Gemini',
+            },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+
+    try {
+      const status = await syncCloudCatalog({ force: true, fetchFn: validFetch });
+      assert.equal(status.lastSyncError, 'Failed to write pricing catalog cache');
+      assert.equal(cloudSyncState.lastSuccessMs, prevSuccessMs);
+    } finally {
+      rmSync(REMOTE_CATALOG_CACHE_FILE, { recursive: true, force: true });
+    }
   });
 });

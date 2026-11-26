@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, it } from 'node:test';
@@ -52,7 +59,16 @@ describe('bun-sqlite-shim', () => {
     writer.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, tokens INTEGER NOT NULL);');
     writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(1, 420);
     writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(2, 880);
+    writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
     writer.close();
+
+    // Remove any leftover empty sidecars (e.g. macOS Bun 1.3.14) to simulate a cleanly closed host DB
+    rmSync(`${dbPath}-wal`, { force: true });
+    rmSync(`${dbPath}-shm`, { force: true });
+
+    const header = readFileSync(dbPath);
+    assert.equal(header[18], 2);
+    assert.equal(header[19], 2);
 
     assert.deepEqual(readdirSync(dir), ['closed.db']);
     assert.equal(isSqliteDbReadyForRead(dbPath), true);
@@ -78,62 +94,117 @@ describe('bun-sqlite-shim', () => {
     assert.deepEqual(readdirSync(dir), ['closed.db']);
   });
 
-  it('reads live WAL uncommitted rows while writer holds -wal and -shm', async () => {
+  it('reads live WAL uncommitted rows and stays sidecar-free if host closes mid-read', async () => {
     await installBunSqliteShim();
     const dir = makeTempDir();
     const dbPath = join(dir, 'live.db');
 
-    const DatabaseSync = getNodeSqliteDatabaseSync();
-    const writer = new DatabaseSync(dbPath);
-    writer.exec('PRAGMA journal_mode = WAL;');
+    const RealDatabaseSync = getNodeSqliteDatabaseSync();
+    const writer = new RealDatabaseSync(dbPath);
+    writer.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;');
     writer.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, tokens INTEGER NOT NULL);');
     writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(1, 150);
+    writer.exec('PRAGMA wal_checkpoint(FULL);');
+    writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(2, 250);
 
+    const hadGlobalDatabaseSync = Object.prototype.hasOwnProperty.call(globalThis, 'DatabaseSync');
+    const prevGlobalDatabaseSync = globalThis.DatabaseSync;
+    let writerClosed = false;
     try {
-      const rows = withReadOnlySqliteDb(dbPath, (db) =>
+      const liveRows = withReadOnlySqliteDb(dbPath, (db) =>
         db.prepare('SELECT idx, tokens FROM steps ORDER BY idx ASC').all()
       );
-      assert.equal(rows.length, 1);
-      assert.equal(rows[0].tokens, 150);
+      assert.deepEqual(
+        liveRows.map((r) => r.tokens),
+        [150, 250]
+      );
+
+      let simulatedShutdown = false;
+      globalThis.DatabaseSync = class RaceSimDatabaseSync extends RealDatabaseSync {
+        constructor(filename, opts) {
+          assert.notEqual(filename, dbPath);
+          if (!simulatedShutdown) {
+            simulatedShutdown = true;
+            writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+            writer.close();
+            writerClosed = true;
+            rmSync(`${dbPath}-wal`, { force: true });
+            rmSync(`${dbPath}-shm`, { force: true });
+            assert.deepEqual(readdirSync(dir), ['live.db']);
+          }
+          super(filename, opts);
+        }
+      };
+
+      const raceRows = withReadOnlySqliteDb(dbPath, (db) =>
+        db.prepare('SELECT idx, tokens FROM steps ORDER BY idx ASC').all()
+      );
+      assert.equal(simulatedShutdown, true);
+      assert.deepEqual(
+        raceRows.map((r) => r.tokens),
+        [150, 250]
+      );
+      assert.deepEqual(readdirSync(dir), ['live.db']);
     } finally {
-      writer.close();
+      if (hadGlobalDatabaseSync) {
+        globalThis.DatabaseSync = prevGlobalDatabaseSync;
+      } else {
+        delete globalThis.DatabaseSync;
+      }
+      if (!writerClosed) {
+        writer.close();
+      }
     }
   });
 
   it('reads orphaned non-empty -wal without -shm without creating -shm in source dir', async () => {
     await installBunSqliteShim();
-    const dir = makeTempDir();
-    const dbPath = join(dir, 'orphaned.db');
+    const writerDir = makeTempDir();
+    const orphanDir = makeTempDir();
+    const checkDir = makeTempDir();
+    const srcDbPath = join(writerDir, 'orphaned.db');
+    const orphanDbPath = join(orphanDir, 'orphaned.db');
 
     const DatabaseSync = getNodeSqliteDatabaseSync();
-    const writer = new DatabaseSync(dbPath);
-    writer.exec('PRAGMA journal_mode = WAL;');
+    const writer = new DatabaseSync(srcDbPath);
+    writer.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;');
     writer.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, tokens INTEGER NOT NULL);');
-    writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(1, 999);
-    // Remove -shm while keeping -wal open/non-empty? Instead snapshot-remove -shm after close?
-    // Re-create via a writer that checkpoints nothing, then copy -wal before close.
-    const rowsBeforeClose = writer.prepare('SELECT idx, tokens FROM steps').all();
-    assert.equal(rowsBeforeClose.length, 1);
-    // Keep -wal alongside -db by copying before close
-    const { copyFileSync } = await import('node:fs');
-    const savedWal = join(dir, 'saved.wal');
-    copyFileSync(`${dbPath}-wal`, savedWal);
+    writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(1, 100);
+    writer.exec('PRAGMA wal_checkpoint(FULL);');
+    writer.prepare('INSERT INTO steps (idx, tokens) VALUES (?, ?)').run(2, 999);
+
+    // Snapshot both .db and -wal together before closing writer so row 2 exists only in -wal
+    copyFileSync(srcDbPath, orphanDbPath);
+    copyFileSync(`${srcDbPath}-wal`, `${orphanDbPath}-wal`);
     writer.close();
 
-    // Restore orphaned non-empty -wal with no -shm present
-    const { renameSync } = await import('node:fs');
-    renameSync(savedWal, `${dbPath}-wal`);
-    rmSync(`${dbPath}-shm`, { force: true });
-
-    const beforeFiles = readdirSync(dir).sort();
-    assert.deepEqual(beforeFiles, ['orphaned.db', 'orphaned.db-wal']);
-
-    const rows = withReadOnlySqliteDb(dbPath, (db) =>
+    // Prove row 2 is not present in the main .db file alone
+    const onlyDbPath = join(checkDir, 'only.db');
+    copyFileSync(orphanDbPath, onlyDbPath);
+    const onlyRows = withReadOnlySqliteDb(onlyDbPath, (db) =>
       db.prepare('SELECT idx, tokens FROM steps ORDER BY idx ASC').all()
     );
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].tokens, 999);
-    assert.deepEqual(readdirSync(dir).sort(), ['orphaned.db', 'orphaned.db-wal']);
+    assert.deepEqual(
+      onlyRows.map((r) => r.tokens),
+      [100]
+    );
+
+    const beforeFiles = readdirSync(orphanDir).sort();
+    assert.deepEqual(beforeFiles, ['orphaned.db', 'orphaned.db-wal']);
+
+    chmodSync(orphanDir, 0o555);
+    try {
+      const rows = withReadOnlySqliteDb(orphanDbPath, (db) =>
+        db.prepare('SELECT idx, tokens FROM steps ORDER BY idx ASC').all()
+      );
+      assert.deepEqual(
+        rows.map((r) => r.tokens),
+        [100, 999]
+      );
+    } finally {
+      chmodSync(orphanDir, 0o755);
+    }
+    assert.deepEqual(readdirSync(orphanDir).sort(), ['orphaned.db', 'orphaned.db-wal']);
   });
 
   it('createBunDatabaseSyncClass rejects non-constructor inputs', () => {
