@@ -201,10 +201,44 @@ export const DEEP_STATS_CACHE_CANDIDATES = dedupeDirCandidates([
   ...BRAIN_DIRS.map((dir) => join(dir, '.deep_stats_cache.json')),
 ]);
 
-const rawLsAddr = String(process.env.ANTIGRAVITY_LS_ADDRESS || '').trim();
-const LS_PROTOCOL = /^https:\/\//i.test(rawLsAddr) ? 'https' : 'http';
-export const LS_ADDR = rawLsAddr.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-export const LS_BASE_URL = LS_ADDR ? `${LS_PROTOCOL}://${LS_ADDR}` : '';
+/**
+ * Returns true only for strict loopback HTTP/HTTPS URLs with no embedded credentials.
+ *
+ * @param {string} rawUrl
+ * @returns {boolean}
+ */
+export function isStrictLoopbackUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+function parseLoopbackLsAddress(rawInput) {
+  const raw = String(rawInput || '').trim();
+  if (!raw) {
+    return { addr: '', baseUrl: '' };
+  }
+  if (raw === 'test.invalid') {
+    return { addr: 'test.invalid', baseUrl: '' };
+  }
+  const proto = /^https:\/\//i.test(raw) ? 'https' : 'http';
+  const cleanAddr = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  const candidateUrl = cleanAddr ? `${proto}://${cleanAddr}` : '';
+  if (!candidateUrl || !isStrictLoopbackUrl(candidateUrl)) {
+    return { addr: '', baseUrl: '' };
+  }
+  return { addr: cleanAddr, baseUrl: candidateUrl };
+}
+
+const initialLs = parseLoopbackLsAddress(process.env.ANTIGRAVITY_LS_ADDRESS);
+export const LS_ADDR = initialLs.addr;
+export const LS_BASE_URL = initialLs.baseUrl;
 export const CSRF_TOKEN =
   process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.ANTIGRAVITY_SERVER_CSRF_TOKEN;
 
@@ -216,13 +250,11 @@ export const lsRuntimeEndpoint = {
 };
 
 export function setLsRuntimeEndpoint(nextAddr, nextCsrfToken, { isDynamic = true } = {}) {
-  const raw = String(nextAddr || '').trim();
-  const proto = /^https:\/\//i.test(raw) ? 'https' : 'http';
-  const cleanAddr = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
-  lsRuntimeEndpoint.addr = cleanAddr;
-  lsRuntimeEndpoint.baseUrl = cleanAddr ? `${proto}://${cleanAddr}` : '';
-  lsRuntimeEndpoint.csrfToken = String(nextCsrfToken || '').trim();
-  lsRuntimeEndpoint.isDynamic = Boolean(cleanAddr && isDynamic);
+  const parsed = parseLoopbackLsAddress(nextAddr);
+  lsRuntimeEndpoint.addr = parsed.addr;
+  lsRuntimeEndpoint.baseUrl = parsed.baseUrl;
+  lsRuntimeEndpoint.csrfToken = parsed.baseUrl ? String(nextCsrfToken || '').trim() : '';
+  lsRuntimeEndpoint.isDynamic = Boolean(parsed.baseUrl && isDynamic);
 }
 
 export function loadJson(filePath, fallback) {

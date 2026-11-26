@@ -36,9 +36,10 @@
 | [src/telemetry/prompt-clean.mjs](../src/telemetry/prompt-clean.mjs) | Telemetry | Strips internal system wrappers from turn prompt previews | Pure computation |
 | [src/telemetry/settings-normalization.mjs](../src/telemetry/settings-normalization.mjs) | Telemetry | Stateless preference normalizers and enum constants | Pure computation |
 | [src/telemetry/workspace-uri.mjs](../src/telemetry/workspace-uri.mjs) | Telemetry | Decodes `file://` workspace URIs across POSIX and Windows | Pure computation |
-| [test/bun-sqlite-shim.test.mjs](../test/bun-sqlite-shim.test.mjs) | Tests | Verifies `bun:sqlite` -> `DatabaseSync` shim and read-only WAL queries | Temp dir only |
+| [test/bun-sqlite-shim.test.mjs](../test/bun-sqlite-shim.test.mjs) | Tests | Verifies `bun:sqlite` -> `DatabaseSync` shim and zero-sidecar read-only WAL queries | Temp dir only |
 | [test/allowlist.test.mjs](../test/allowlist.test.mjs) | Tests | Verifies fail-closed API route allowlist and settings sanitizer | Zero network |
-| [test/telemetry-kernel.test.mjs](../test/telemetry-kernel.test.mjs) | Tests | Verifies offline `buildTelemetryPayload`, LS discovery parsing, and pricing lookup | Temp `dataDir`/`geminiDir` only |
+| [test/pricing-sync.test.mjs](../test/pricing-sync.test.mjs) | Tests | Verifies `pricing-catalog.json` sync schema validation and TTL caching | Mocked fetch, temp dir |
+| [test/telemetry-kernel.test.mjs](../test/telemetry-kernel.test.mjs) | Tests | Verifies offline `buildTelemetryPayload` (zero fetch), strict loopback RPC guard, LS discovery, and pricing lookup | Temp `dataDir`/`geminiDir` only |
 
 ## Planned layers (upcoming branches)
 

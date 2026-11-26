@@ -26,19 +26,21 @@ import {
   CLOUD_SYNC_TTL_MS,
   REMOTE_CATALOG_CACHE_FILE,
   cloudSyncState,
-  isPlainObject,
   loadJson,
   saveJson,
 } from './paths.mjs';
-import { getCloudStatus, rebuildActiveCatalog } from '../telemetry/pricing-catalog.mjs';
+import {
+  getCloudStatus,
+  rebuildActiveCatalog,
+  sanitizeCatalogPayload,
+} from '../telemetry/pricing-catalog.mjs';
 
-function isValidCatalog(obj) {
-  return (
-    isPlainObject(obj) &&
-    Number(obj.schemaVersion) >= 1 &&
-    isPlainObject(obj.models) &&
-    Object.keys(obj.models).length > 0
-  );
+function validateCatalogPayload(obj) {
+  const sanitized = sanitizeCatalogPayload(obj);
+  if (!sanitized || Object.keys(sanitized.pricing).length === 0) {
+    return null;
+  }
+  return sanitized;
 }
 
 /**
@@ -54,9 +56,9 @@ export async function syncCloudCatalog({ force = false, fetchFn = fetch } = {}) 
   const now = Date.now();
   if (!force) {
     const cached = loadJson(REMOTE_CATALOG_CACHE_FILE, null);
-    const fetchedAtMs = Date.parse(cached?.fetchedAt || '');
+    const fetchedAtMs = Number(cached?.fetchedAtMs) || Date.parse(cached?.fetchedAt || '');
     if (
-      isValidCatalog(cached) &&
+      validateCatalogPayload(cached) &&
       Number.isFinite(fetchedAtMs) &&
       now - fetchedAtMs < CLOUD_SYNC_TTL_MS
     ) {
@@ -84,18 +86,20 @@ export async function syncCloudCatalog({ force = false, fetchFn = fetch } = {}) 
           continue;
         }
         const parsed = await res.json();
-        if (!isValidCatalog(parsed)) {
+        if (!validateCatalogPayload(parsed)) {
           lastErr = 'Invalid pricing catalog schema';
           continue;
         }
+        const nowMs = Date.now();
         const payload = {
           ...parsed,
-          fetchedAt: new Date().toISOString(),
+          fetchedAt: new Date(nowMs).toISOString(),
+          fetchedAtMs: nowMs,
           sourceUrl: url,
         };
         saveJson(REMOTE_CATALOG_CACHE_FILE, payload);
         rebuildActiveCatalog();
-        cloudSyncState.lastSuccessMs = Date.now();
+        cloudSyncState.lastSuccessMs = nowMs;
         cloudSyncState.lastError = null;
         return getCloudStatus();
       } catch (err) {

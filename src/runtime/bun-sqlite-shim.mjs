@@ -20,6 +20,9 @@
  * interface used by upstream telemetry readers and caches.
  */
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 /**
  * Creates a `DatabaseSync`-compatible class backed by a `bun:sqlite` `Database` constructor.
  *
@@ -57,6 +60,24 @@ export function createBunDatabaseSyncClass(BunDatabase) {
 
     constructor(filename, options = {}) {
       const readOnly = Boolean(options?.readOnly);
+      const isImmutableUri =
+        typeof filename === 'string' &&
+        /^file:/i.test(filename) &&
+        /[?&]immutable=1(?:&|$)/i.test(filename);
+
+      if (readOnly && (isImmutableUri || Boolean(options?.immutable))) {
+        const fsPath = isImmutableUri ? fileURLToPath(filename.split('?')[0]) : filename;
+        const buf = Buffer.from(readFileSync(fsPath));
+        // Clear WAL format version bytes (18..19) in memory so SQLite deserializes
+        // cleanly without touching or creating -wal/-shm sidecar files on disk.
+        if (buf.length >= 20 && buf[18] === 2 && buf[19] === 2) {
+          buf[18] = 1;
+          buf[19] = 1;
+        }
+        this.#db = new BunDatabase(buf, { readonly: true });
+        return;
+      }
+
       const bunOptions = readOnly ? { readonly: true } : { create: true };
       this.#db = new BunDatabase(filename, bunOptions);
     }

@@ -8,7 +8,19 @@
  * 3. 采用短连接 + `PRAGMA busy_timeout = 1000` + `SQLITE_BUSY` 瞬时锁重试并在 `finally` 中立即释放句柄，绝不阻塞宿主 WAL checkpoint。
  */
 
-import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const SQLITE_IN_CHUNK_SIZE = 400;
 const SQLITE_MIN_READY_BYTES = 4096;
@@ -218,6 +230,12 @@ export function isSqliteBusyError(err) {
   return /SQLITE_BUSY|database is locked/i.test(msg);
 }
 
+function toImmutableSqliteUri(dbPath) {
+  const url = pathToFileURL(resolve(dbPath));
+  url.searchParams.set('immutable', '1');
+  return url.href;
+}
+
 /**
  * 以只读模式打开 SQLite 数据库执行查询并在 `finally` 中立即关闭连接，避免长连接阻塞宿主 WAL checkpoint。
  * 打开前先执行无锁头部就绪校验；遇到瞬时锁竞争（`SQLITE_BUSY`）时自动重试 1 次。
@@ -231,10 +249,36 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
   const DatabaseSync = getNodeSqliteDatabaseSync();
   if (!DatabaseSync) return null;
   if (!isSqliteDbReadyForRead(dbPath)) return null;
+
+  let walStat = null;
+  let shmStat = null;
+  try {
+    walStat = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
+    shmStat = statSync(`${dbPath}-shm`, { throwIfNoEntry: false });
+  } catch {
+    walStat = null;
+    shmStat = null;
+  }
+  const hasNonEmptyWal = Boolean(walStat && Number(walStat.size || 0) > 0);
+  const hasShm = Boolean(shmStat);
+
   for (let attempt = 0; attempt < 2; attempt++) {
     let db = null;
+    let tempWalDir = '';
     try {
-      db = new DatabaseSync(dbPath, { readOnly: true });
+      if (!hasNonEmptyWal) {
+        db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
+      } else if (hasShm) {
+        db = new DatabaseSync(dbPath, { readOnly: true });
+      } else {
+        // Non-empty -wal without -shm: snapshot both into a temp dir so SQLite
+        // can replay uncommitted WAL frames without creating sidecars in source dir.
+        tempWalDir = mkdtempSync(join(tmpdir(), 'ag-mon-wal-'));
+        const tempDbPath = join(tempWalDir, basename(dbPath));
+        copyFileSync(dbPath, tempDbPath);
+        copyFileSync(`${dbPath}-wal`, `${tempDbPath}-wal`);
+        db = new DatabaseSync(tempDbPath, { readOnly: true });
+      }
       try {
         db.exec('PRAGMA busy_timeout = 1000;');
       } catch {
@@ -252,6 +296,13 @@ export function withReadOnlySqliteDb(dbPath, queryFn) {
           db.close();
         } catch {
           // 忽略关闭异常
+        }
+      }
+      if (tempWalDir) {
+        try {
+          rmSync(tempWalDir, { recursive: true, force: true });
+        } catch {
+          // Ignore temp cleanup errors
         }
       }
     }

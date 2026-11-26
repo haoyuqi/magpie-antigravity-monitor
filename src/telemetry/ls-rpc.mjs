@@ -11,7 +11,7 @@
  * 3. 拉取并按端点隔离缓存 `RetrieveUserQuotaSummary` 官方实时配额摘要与 `GetAvailableModels` 模型目录。
  */
 
-import { lsRuntimeEndpoint } from '../runtime/paths.mjs';
+import { isStrictLoopbackUrl, lsRuntimeEndpoint } from '../runtime/paths.mjs';
 import {
   getEndpointQuotaCache,
   getRemoteWindowRpcInvoker,
@@ -37,17 +37,6 @@ let customLoopbackHttpsRequester = null;
 
 export function setLoopbackHttpsRequester(requester) {
   customLoopbackHttpsRequester = typeof requester === 'function' ? requester : null;
-}
-
-function isStrictLoopbackUrl(rawUrl) {
-  try {
-    const parsed = new URL(String(rawUrl || ''));
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    const host = parsed.hostname.toLowerCase();
-    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
-  } catch {
-    return false;
-  }
 }
 
 async function getLoopbackHttpsRequestFn() {
@@ -206,6 +195,9 @@ export function getContextModelCatalog(endpoint = null) {
 }
 
 async function postLsRpcOnce(baseUrl, csrfToken, method, body, timeoutMs) {
+  if (!isStrictLoopbackUrl(baseUrl)) {
+    throw new Error('Refusing non-loopback Language Server URL');
+  }
   return fetch(`${baseUrl}/exa.language_server_pb.LanguageServerService/${method}`, {
     method: 'POST',
     headers: {
@@ -299,12 +291,18 @@ export async function callLsRpc(method, body = {}, timeoutMs = 5000, endpoint = 
   if (endpoint && endpoint.isRemote) {
     return callRemoteEndpointLsRpc(endpoint, method, body, timeoutMs);
   }
+  if (lsRuntimeEndpoint.addr === 'test.invalid') {
+    throw new Error('Language Server RPC disabled in offline test mode');
+  }
 
-  if (!lsRuntimeEndpoint.baseUrl && lsRuntimeEndpoint.addr !== 'test.invalid') {
+  if (!lsRuntimeEndpoint.baseUrl) {
     await ensureLsEndpointDiscovered({ force: false });
   }
   if (!lsRuntimeEndpoint.baseUrl) {
     throw new Error('Language Server address (ANTIGRAVITY_LS_ADDRESS) is not configured');
+  }
+  if (!isStrictLoopbackUrl(lsRuntimeEndpoint.baseUrl)) {
+    throw new Error('Refusing non-loopback Language Server URL');
   }
 
   const prevAddr = lsRuntimeEndpoint.addr;
