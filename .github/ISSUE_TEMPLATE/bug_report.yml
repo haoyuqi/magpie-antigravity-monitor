@@ -1,0 +1,90 @@
+name: Bug Report
+description: Report a bug in the Magpie Antigravity Monitor plugin
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please verify that this issue belongs to the Magpie Antigravity Monitor plugin rather than Magpie core (`yetone/magpie`).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Clear and concise description of what happened.
+    validations:
+      required: true
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin Version / Commit
+      placeholder: e.g. 0.1.0 or commit SHA
+  - type: input
+    id: magpie_version
+    attributes:
+      label: Magpie Version
+      placeholder: e.g. 0.1.4762
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: access_mode
+    attributes:
+      label: Access Mode
+      options:
+        - Magpie Desktop Window
+        - magpie web (Local Browser)
+        - magpie web (Remote / Reverse Proxy)
+    validations:
+      required: true
+  - type: dropdown
+    id: antigravity_client
+    attributes:
+      label: Antigravity Client
+      options:
+        - Antigravity 2.0 (Desktop)
+        - Antigravity IDE
+        - Antigravity CLI (agy)
+        - Offline (no client running)
+    validations:
+      required: true
+  - type: input
+    id: antigravity_version
+    attributes:
+      label: Antigravity Client Version (optional)
+      placeholder: e.g. 2.33.0
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs Actual Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized Logs / Console Errors
+      description: Paste relevant plugin host or browser console errors. Strip all tokens, CSRF values, and personal paths.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy & Security Check
+      options:
+        - label: I confirmed no tokens, CSRF secrets, OAuth credentials, or private prompts are included above.
+          required: true

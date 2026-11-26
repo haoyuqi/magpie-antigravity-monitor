@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+.sandbox/
+.data/
+*.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+coverage/
+.env
+.env.*

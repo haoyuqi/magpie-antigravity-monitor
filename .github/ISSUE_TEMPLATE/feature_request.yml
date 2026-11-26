@@ -1,0 +1,38 @@
+name: Feature Request
+description: Suggest an enhancement within the read-only Antigravity monitor scope
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This plugin is a **strictly read-only** Antigravity monitor for Magpie. Requests involving CDP injection, account switching, context limit hijacking, or mutating Antigravity configs are out of scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What monitoring or usability problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context (optional)
+      description: Add mockups, screenshots, or related references if helpful.
+
+  - type: checkboxes
+    id: scope-check
+    attributes:
+      label: Scope Confirmation
+      options:
+        - label: This request stays strictly read-only and does not modify external Antigravity configs or processes.
+          required: true
