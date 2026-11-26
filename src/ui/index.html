@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Antigravity Monitor</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./preload.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="brand-title">Antigravity Monitor</span>
+        <span id="account-pill" class="pill pill-muted">Connecting...</span>
+        <span id="ls-pill" class="pill pill-muted">Local Scan</span>
+      </div>
+      <div class="topbar-controls">
+        <select id="conv-select" class="select-input" aria-label="Active conversation"></select>
+        <button id="refresh-btn" type="button" class="btn btn-primary">Refresh</button>
+      </div>
+    </header>
+
+    <nav class="tab-bar" role="tablist" aria-label="Monitor views">
+      <button type="button" class="tab-btn is-active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+      <button type="button" class="tab-btn" data-tab="steps" role="tab" aria-selected="false">Steps</button>
+      <button type="button" class="tab-btn" data-tab="analytics" role="tab" aria-selected="false">Analytics</button>
+      <button type="button" class="tab-btn" data-tab="settings" role="tab" aria-selected="false">Settings</button>
+    </nav>
+
+    <main id="app-main" class="main-content">
+      <section id="banner-area"></section>
+      <section id="tab-overview" class="tab-panel is-active"></section>
+      <section id="tab-steps" class="tab-panel"></section>
+      <section id="tab-analytics" class="tab-panel"></section>
+      <section id="tab-settings" class="tab-panel"></section>
+    </main>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

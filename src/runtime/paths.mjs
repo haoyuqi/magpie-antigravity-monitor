@@ -384,5 +384,5 @@ export function persistTrajectoryCacheIfNeeded(options = {}) {
 }
 
 export function clearRuntimeCaches({ liveCascadeIds = null } = {}) {
-  return trajectoryCacheStore.clearRuntimeCaches({ liveCascadeIds });
+  return trajectoryCacheStore.clearCache({ liveCascadeIds });
 }

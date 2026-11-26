@@ -27,7 +27,11 @@ const {
 const {
   installBunSqliteShim,
   buildTelemetryPayload,
+  clearTelemetryBuilderMemo,
+  createDefaultSettingsObject,
   loadSettings,
+  saveJson,
+  SETTINGS_FILE,
 } = await import('../src/telemetry/index.mjs');
 const { callLsRpc } = await import('../src/telemetry/ls-rpc.mjs');
 const {
@@ -212,5 +216,136 @@ describe('read-only telemetry kernel', () => {
     const entry = MODEL_PRICING['gemini-2.5-pro'];
     const pricing = resolvePricingAt(entry, Date.now());
     assert.ok(pricing && typeof pricing.input === 'number' && typeof pricing.output === 'number');
+  });
+
+  it('invalidates overlapping in-flight telemetry and keeps cold consumption-presets non-null', async () => {
+    const prevFetch = globalThis.fetch;
+    const prevAddr = lsRuntimeEndpoint.addr;
+    const prevBaseUrl = lsRuntimeEndpoint.baseUrl;
+    const prevToken = lsRuntimeEndpoint.csrfToken;
+    const prevDynamic = lsRuntimeEndpoint.isDynamic;
+
+    let releasePreSaveGate = null;
+    let preSaveEnteredResolve = null;
+    const preSaveEntered = new Promise((r) => {
+      preSaveEnteredResolve = r;
+    });
+    let pauseFirstCall = true;
+
+    try {
+      setLsDiscoveryOverride({
+        daemonDirs: [],
+        isPidAliveFn: () => false,
+        listProcessesFn: async () => [],
+        execCmdFn: async () => '',
+      });
+      lsRuntimeEndpoint.addr = '127.0.0.1:41234';
+      lsRuntimeEndpoint.baseUrl = 'http://127.0.0.1:41234';
+      lsRuntimeEndpoint.csrfToken = 'tok-concurrency';
+
+      globalThis.fetch = async () => {
+        if (pauseFirstCall) {
+          pauseFirstCall = false;
+          preSaveEnteredResolve();
+          await new Promise((r) => {
+            releasePreSaveGate = r;
+          });
+        }
+        return new Response(JSON.stringify({ userStatus: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      };
+
+      // 1. Start pre-save build and hold it inside fetch
+      clearTelemetryBuilderMemo();
+      const preSavePromise = buildTelemetryPayload('', false, { range: 'all' });
+      await preSaveEntered;
+
+      // 2. While preSavePromise is in flight, update settings and invalidate memo
+      saveJson(SETTINGS_FILE, {
+        ...createDefaultSettingsObject(),
+        weeklyLimitMode: 'custom_tokens',
+        weeklyTokenBudget: 765432,
+      });
+      clearTelemetryBuilderMemo();
+
+      // 3. Post-save GET must NOT reuse preSavePromise and must observe updated settings
+      const postSavePromise = buildTelemetryPayload('', false, { range: 'all' });
+      assert.notEqual(postSavePromise, preSavePromise);
+      const postSavePayload = await postSavePromise;
+      assert.equal(postSavePayload.settings.weeklyLimitMode, 'custom_tokens');
+      assert.equal(postSavePayload.settings.weeklyTokenBudget, 765432);
+
+      // 4. Release pre-save build and confirm it does not pollute snapshot cache (0 fetches)
+      releasePreSaveGate();
+      await preSavePromise;
+
+      let fastFetchCount = 0;
+      globalThis.fetch = async () => {
+        fastFetchCount++;
+        throw new Error('Unexpected fetch when fast snapshot should remain valid');
+      };
+      const fastPresets = await buildTelemetryPayload('', false, {
+        scope: 'consumption-presets',
+      });
+      assert.equal(fastPresets?.scope, 'consumption-presets');
+      assert.equal(fastFetchCount, 0);
+
+      const afterPreSavePayload = await buildTelemetryPayload('', false, { range: 'all' });
+      assert.equal(afterPreSavePayload.settings.weeklyTokenBudget, 765432);
+
+      // 5. Cold consumption-presets overlapping double clearTelemetryBuilderMemo() must never return null
+      clearTelemetryBuilderMemo();
+      let trajPauseCount = 0;
+      const presetsGates = [];
+      const presetsEnteredPromises = [0, 1].map(() => {
+        let resolveEntered;
+        const promise = new Promise((r) => {
+          resolveEntered = r;
+        });
+        return { promise, resolveEntered };
+      });
+      globalThis.fetch = async (url) => {
+        if (String(url).includes('GetAllCascadeTrajectories') && trajPauseCount < 2) {
+          const idx = trajPauseCount++;
+          presetsEnteredPromises[idx].resolveEntered();
+          await new Promise((r) => {
+            presetsGates[idx] = r;
+          });
+        }
+        return new Response(JSON.stringify({ userStatus: {} }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      };
+
+      const coldPresetsPromise = buildTelemetryPayload('', false, {
+        scope: 'consumption-presets',
+      });
+      await presetsEnteredPromises[0].promise;
+      clearTelemetryBuilderMemo();
+      presetsGates[0]();
+
+      await presetsEnteredPromises[1].promise;
+      clearTelemetryBuilderMemo();
+      presetsGates[1]();
+
+      const presetsPayload = await coldPresetsPromise;
+      assert.ok(presetsPayload && typeof presetsPayload === 'object');
+      assert.equal(presetsPayload.scope, 'consumption-presets');
+      assert.equal(typeof presetsPayload.ranges, 'object');
+      assert.equal(trajPauseCount, 2);
+    } finally {
+      if (releasePreSaveGate) releasePreSaveGate();
+      setLsDiscoveryOverride(null);
+      globalThis.fetch = prevFetch;
+      lsRuntimeEndpoint.addr = prevAddr;
+      lsRuntimeEndpoint.baseUrl = prevBaseUrl;
+      lsRuntimeEndpoint.csrfToken = prevToken;
+      lsRuntimeEndpoint.isDynamic = prevDynamic;
+      saveJson(SETTINGS_FILE, createDefaultSettingsObject());
+      clearTelemetryBuilderMemo();
+    }
   });
 });

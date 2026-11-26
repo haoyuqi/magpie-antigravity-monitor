@@ -4,6 +4,18 @@
 
 | Path | Layer | Responsibility | Key Invariants |
 | --- | --- | --- | --- |
+| [package.json](../package.json) | Manifest | Magpie OpenCode v1 plugin & `magpie.page.service` manifest | Declares `page/index.html`, `page/icon.svg`, and `port: 18787` |
+| [index.mjs](../index.mjs) | Entrypoint | Magpie OpenCode v1 `server(input, options)` entrypoint | Single-start guard; isolates `DATA_DIR` under `input.directory` |
+| [page/index.html](../page/index.html) | Launcher | Sandboxed Magpie iframe launcher shell | Zero inline scripts; `connect-src 'none'` compatible |
+| [page/boot.js](../page/boot.js) | Launcher | Reads `_magpie/bridge.js` theme/tokens/service and redirects | Never uses `fetch`/`XHR`/`WebSocket`/`localStorage`/`cookie` |
+| [page/icon.svg](../page/icon.svg) | Launcher | Monochrome `currentColor` SVG icon for Magpie sidebar | Static SVG |
+| [src/server/http-server.mjs](../src/server/http-server.mjs) | Server | `127.0.0.1` HTTP server with token auth and rolling-restart retry | Enforces `Host`, `Origin`, `Sec-Fetch-Mode: navigate`, `X-Usage-Monitor-Token` |
+| [src/server/router.mjs](../src/server/router.mjs) | Server | Fail-closed dispatcher for the 6 allowlisted `/api/*` routes | Rejects host-mutating routes and `__*` sub-actions |
+| [src/server/preload.mjs](../src/server/preload.mjs) | Server | Generates `/preload.js` `window.sidecar.fetch` shim and theme boot | Uses `./` relative URLs for `magpie web` subpath proxy compatibility |
+| [src/ui/index.html](../src/ui/index.html) | UI | Four-tab monitor dashboard HTML shell | Relative `./` asset URLs only |
+| [src/ui/styles.css](../src/ui/styles.css) | UI | Light/dark responsive dashboard styles inheriting `--magpie-*` tokens | Pure CSS, zero external assets |
+| [src/ui/app.js](../src/ui/app.js) | UI | Four-tab dashboard (`Overview`, `Steps`, `Analytics`, `Settings`) | Safe DOM construction (`textContent`), polling via `window.sidecar.fetch` |
+| [src/ui/view-model.mjs](../src/ui/view-model.mjs) | UI | Pure view-model mappers for quota pools, 10-channel context, multi-agent steps, and analytics | Matches exact `telemetry-builder.mjs` / `usage-aggregator.mjs` schemas |
 | [data/pricing-catalog.json](../data/pricing-catalog.json) | Data | Bundled fallback model pricing catalog | Read-only fallback; never mutated at runtime |
 | [src/runtime/bun-sqlite-shim.mjs](../src/runtime/bun-sqlite-shim.mjs) | Runtime | Adapts `bun:sqlite` to `globalThis.DatabaseSync` for Bun hosts | Installed before SQLite readers; `{ readOnly: true }` enforced |
 | [src/runtime/paths.mjs](../src/runtime/paths.mjs) | Runtime | Resolves isolated `DATA_DIR`, read-only `~/.gemini/antigravity*` roots, and runtime endpoint/cache state | Never writes into `~/.gemini` or `~/.config/magpie` |
@@ -40,10 +52,10 @@
 | [test/allowlist.test.mjs](../test/allowlist.test.mjs) | Tests | Verifies fail-closed API route allowlist and settings sanitizer | Zero network |
 | [test/pricing-sync.test.mjs](../test/pricing-sync.test.mjs) | Tests | Verifies `pricing-catalog.json` sync schema validation and TTL caching | Mocked fetch, temp dir |
 | [test/telemetry-kernel.test.mjs](../test/telemetry-kernel.test.mjs) | Tests | Verifies offline `buildTelemetryPayload` (zero fetch), strict loopback RPC guard, LS discovery, and pricing lookup | Temp `dataDir`/`geminiDir` only |
+| [test/http-server.test.mjs](../test/http-server.test.mjs) | Tests | Verifies `Sec-Fetch-Mode: navigate` / plain-HTML LAN nav, `Host`/`Origin` guards, preflight CORS, `X-Usage-Monitor-Token`, and asset serving | Loopback ephemeral port, temp dirs |
+| [test/plugin-lifecycle.test.mjs](../test/plugin-lifecycle.test.mjs) | Tests | Verifies `package.json` manifest, `input.directory` isolation, `page/` sandbox invariants, and non-blocking `EADDRINUSE` recovery | Loopback ephemeral port, temp dirs |
+| [test/ui-view-model.test.mjs](../test/ui-view-model.test.mjs) | Tests | Verifies non-empty telemetry rendering models (weekly-only pools, 10-channel context, multi-agent newest steps, analytics) | Pure unit tests |
 
 ## Planned layers (upcoming branches)
 
-- `package.json` & `index.mjs` — Magpie OpenCode v1 plugin entrypoint and manifest (`feat/magpie-page-service`).
-- `page/` — Sandboxed iframe launcher (`feat/magpie-page-service`).
-- `src/server/` — Loopback HTTP server, token auth, router, and `preload.js` fetch shim (`feat/magpie-page-service`).
-- `src/ui/` — Panel frontend assets and Magpie theme integration (`feat/magpie-page-service` & `feat/ui-polish-and-ci`).
+- `src/ui/magpie-theme.css`, `magpie web` subpath proxy validation, `README.md` usage docs, and `.github/workflows/ci.yml` (`feat/ui-polish-and-ci`).
