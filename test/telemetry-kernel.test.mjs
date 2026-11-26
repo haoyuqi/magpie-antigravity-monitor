@@ -277,24 +277,27 @@ describe('read-only telemetry kernel', () => {
       assert.equal(postSavePayload.settings.weeklyLimitMode, 'custom_tokens');
       assert.equal(postSavePayload.settings.weeklyTokenBudget, 765432);
 
-      // 4. Release pre-save build and confirm it does not pollute snapshot cache
+      // 4. Release pre-save build and confirm it does not pollute snapshot cache (0 fetches)
       releasePreSaveGate();
       await preSavePromise;
-      const afterPreSavePayload = await buildTelemetryPayload('', false, { range: 'all' });
-      assert.equal(afterPreSavePayload.settings.weeklyTokenBudget, 765432);
 
-      // 4b. Verify fast consumption-presets snapshot was NOT overwritten by preSavePromise (0 fetches)
+      let fastFetchCount = 0;
       globalThis.fetch = async () => {
+        fastFetchCount++;
         throw new Error('Unexpected fetch when fast snapshot should remain valid');
       };
       const fastPresets = await buildTelemetryPayload('', false, {
         scope: 'consumption-presets',
       });
       assert.equal(fastPresets?.scope, 'consumption-presets');
+      assert.equal(fastFetchCount, 0);
+
+      const afterPreSavePayload = await buildTelemetryPayload('', false, { range: 'all' });
+      assert.equal(afterPreSavePayload.settings.weeklyTokenBudget, 765432);
 
       // 5. Cold consumption-presets overlapping double clearTelemetryBuilderMemo() must never return null
       clearTelemetryBuilderMemo();
-      let presetsFetchCount = 0;
+      let trajPauseCount = 0;
       const presetsGates = [];
       const presetsEnteredPromises = [0, 1].map(() => {
         let resolveEntered;
@@ -303,9 +306,9 @@ describe('read-only telemetry kernel', () => {
         });
         return { promise, resolveEntered };
       });
-      globalThis.fetch = async () => {
-        const idx = presetsFetchCount++;
-        if (idx < 2) {
+      globalThis.fetch = async (url) => {
+        if (String(url).includes('GetAllCascadeTrajectories') && trajPauseCount < 2) {
+          const idx = trajPauseCount++;
           presetsEnteredPromises[idx].resolveEntered();
           await new Promise((r) => {
             presetsGates[idx] = r;
@@ -332,6 +335,7 @@ describe('read-only telemetry kernel', () => {
       assert.ok(presetsPayload && typeof presetsPayload === 'object');
       assert.equal(presetsPayload.scope, 'consumption-presets');
       assert.equal(typeof presetsPayload.ranges, 'object');
+      assert.equal(trajPauseCount, 2);
     } finally {
       if (releasePreSaveGate) releasePreSaveGate();
       setLsDiscoveryOverride(null);
