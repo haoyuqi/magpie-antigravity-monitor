@@ -323,6 +323,146 @@ describe('bun-sqlite-shim', () => {
     }
   });
 
+  it('keeps multi-query reads atomic on an initially empty-WAL DB when writer updates and checkpoints mid-read', async () => {
+    await installBunSqliteShim();
+    const dir = makeTempDir();
+    const dbPath = join(dir, 'empty-wal-atomic.db');
+
+    const DatabaseSync = getNodeSqliteDatabaseSync();
+    const writer = new DatabaseSync(dbPath);
+    writer.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;');
+    writer.exec('CREATE TABLE t_a (id INTEGER PRIMARY KEY, val INTEGER NOT NULL);');
+    writer.exec('CREATE TABLE t_b (id INTEGER PRIMARY KEY, val INTEGER NOT NULL);');
+    writer.prepare('INSERT INTO t_a (id, val) VALUES (?, ?)').run(1, 1);
+    writer.prepare('INSERT INTO t_b (id, val) VALUES (?, ?)').run(1, 1);
+    writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+
+    let writerClosed = false;
+    try {
+      const pair = withReadOnlySqliteDb(dbPath, (db) => {
+        const a = db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val;
+        writer.exec(
+          'BEGIN IMMEDIATE; UPDATE t_a SET val = 2 WHERE id = 1; UPDATE t_b SET val = 2 WHERE id = 1; COMMIT;'
+        );
+        writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+        const b = db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val;
+        return [a, b];
+      });
+      assert.deepEqual(pair, [1, 1]);
+
+      const updatedPair = withReadOnlySqliteDb(dbPath, (db) => [
+        db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val,
+        db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val,
+      ]);
+      assert.deepEqual(updatedPair, [2, 2]);
+
+      writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      writer.close();
+      writerClosed = true;
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+
+      assert.deepEqual(readdirSync(dir), ['empty-wal-atomic.db']);
+      const postClosePair = withReadOnlySqliteDb(dbPath, (db) => [
+        db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val,
+        db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val,
+      ]);
+      assert.deepEqual(postClosePair, [2, 2]);
+      assert.deepEqual(readdirSync(dir), ['empty-wal-atomic.db']);
+    } finally {
+      if (!writerClosed) {
+        writer.close();
+      }
+    }
+  });
+
+  it('handles WAL transitioning from empty to non-empty during snapshot without mixed state', async () => {
+    await installBunSqliteShim();
+    const dir = makeTempDir();
+    const dbPath = join(dir, 'empty-to-nonempty.db');
+
+    const DatabaseSync = getNodeSqliteDatabaseSync();
+    const writer = new DatabaseSync(dbPath);
+    writer.exec('PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;');
+    writer.exec('CREATE TABLE t_a (id INTEGER PRIMARY KEY, val INTEGER NOT NULL);');
+    writer.exec('CREATE TABLE t_b (id INTEGER PRIMARY KEY, val INTEGER NOT NULL);');
+    writer.prepare('INSERT INTO t_a (id, val) VALUES (?, ?)').run(1, 1);
+    writer.prepare('INSERT INTO t_b (id, val) VALUES (?, ?)').run(1, 1);
+    writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+
+    let writerClosed = false;
+    try {
+      // Sub-case A: -wal becomes non-empty between .db snapshot and -wal snapshot without checkpoint
+      const pairA = withReadOnlySqliteDb(
+        dbPath,
+        (db) => [
+          db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val,
+          db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val,
+        ],
+        {
+          _onAfterDbSnapshot: (attempt) => {
+            if (attempt === 0) {
+              writer.exec(
+                'BEGIN IMMEDIATE; UPDATE t_a SET val = 2 WHERE id = 1; UPDATE t_b SET val = 2 WHERE id = 1; COMMIT;'
+              );
+            }
+          },
+        }
+      );
+      assert.deepEqual(pairA, [2, 2]);
+
+      // Reset to empty -wal at (3, 3)
+      writer.exec(
+        'BEGIN IMMEDIATE; UPDATE t_a SET val = 3 WHERE id = 1; UPDATE t_b SET val = 3 WHERE id = 1; COMMIT;'
+      );
+      writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+
+      // Sub-case B: -wal is empty at start, then writer commits (4,4), checkpoints, and commits (5,5)
+      const attempts = [];
+      const pairB = withReadOnlySqliteDb(
+        dbPath,
+        (db) => [
+          db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val,
+          db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val,
+        ],
+        {
+          _onAfterDbSnapshot: (attempt) => {
+            attempts.push(attempt);
+            if (attempt === 0) {
+              writer.exec(
+                'BEGIN IMMEDIATE; UPDATE t_a SET val = 4 WHERE id = 1; UPDATE t_b SET val = 4 WHERE id = 1; COMMIT;'
+              );
+              writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+              writer.exec(
+                'BEGIN IMMEDIATE; UPDATE t_a SET val = 5 WHERE id = 1; UPDATE t_b SET val = 5 WHERE id = 1; COMMIT;'
+              );
+            }
+          },
+        }
+      );
+      assert.ok(attempts.length >= 2);
+      assert.deepEqual(pairB, [5, 5]);
+
+      writer.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+      writer.close();
+      writerClosed = true;
+      rmSync(`${dbPath}-wal`, { force: true });
+      rmSync(`${dbPath}-shm`, { force: true });
+
+      assert.deepEqual(readdirSync(dir), ['empty-to-nonempty.db']);
+      const postClosePair = withReadOnlySqliteDb(dbPath, (db) => [
+        db.prepare('SELECT val FROM t_a WHERE id = 1').get()?.val,
+        db.prepare('SELECT val FROM t_b WHERE id = 1').get()?.val,
+      ]);
+      assert.deepEqual(postClosePair, [5, 5]);
+      assert.deepEqual(readdirSync(dir), ['empty-to-nonempty.db']);
+    } finally {
+      if (!writerClosed) {
+        writer.close();
+      }
+    }
+  });
+
   it('createBunDatabaseSyncClass rejects non-constructor inputs', () => {
     assert.throws(() => createBunDatabaseSyncClass(null), TypeError);
   });

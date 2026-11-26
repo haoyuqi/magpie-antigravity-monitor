@@ -121,14 +121,18 @@ describe('read-only telemetry kernel', () => {
       'utf8'
     );
 
-    let execCalls = 0;
+    let listProcCalls = 0;
     try {
       setLsDiscoveryOverride({
+        platform: 'linux',
         daemonDirs: [daemonDir],
         isPidAliveFn: () => true,
+        listProcessesFn: async () => {
+          listProcCalls += 1;
+          return [];
+        },
         execCmdFn: async () => {
-          execCalls += 1;
-          return '';
+          throw new Error('Should not execute OS command when listProcessesFn is stubbed');
         },
       });
 
@@ -160,12 +164,14 @@ describe('read-only telemetry kernel', () => {
           `Unexpected rediscovery target: ${call.url}`
         );
       }
-      assert.equal(execCalls, 1);
+      assert.equal(listProcCalls, 1);
 
       const probeRedirects = [];
       const endpoint = await discoverAntigravityLsEndpoint({
+        platform: 'linux',
         daemonDirs: [daemonDir],
         isPidAliveFn: () => true,
+        listProcessesFn: async () => [],
         execCmdFn: async () => '',
         fetchFn: async (_url, init = {}) => {
           probeRedirects.push(init.redirect);

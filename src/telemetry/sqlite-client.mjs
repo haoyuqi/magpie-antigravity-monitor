@@ -325,39 +325,27 @@ export function withReadOnlySqliteDb(dbPath, queryFn, options = {}) {
     let db = null;
     let tempWalDir = '';
     try {
-      let walStat = null;
-      try {
-        walStat = statSync(`${dbPath}-wal`, { throwIfNoEntry: false });
-      } catch {
-        walStat = null;
+      // Always read a double-fenced snapshot of .db and optional -wal into memory,
+      // verify neither changed across the pair of reads, then open the private copy.
+      const dbSnap1 = readFileSnapshot(dbPath);
+      if (onAfterDbSnapshot) {
+        onAfterDbSnapshot(attempt);
       }
-      const hasNonEmptyWal = Boolean(walStat && Number(walStat.size || 0) > 0);
+      const walSnap1 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
+      const dbSnap2 = readFileSnapshot(dbPath);
+      const walSnap2 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
+      if (!snapshotsMatch(dbSnap1, dbSnap2) || !snapshotsMatch(walSnap1, walSnap2)) {
+        continue;
+      }
 
-      if (!hasNonEmptyWal) {
-        db = new DatabaseSync(toImmutableSqliteUri(dbPath), { readOnly: true });
+      tempWalDir = mkdtempSync(join(tmpdir(), 'ag-mon-wal-'));
+      const tempDbPath = join(tempWalDir, basename(dbPath));
+      writeFileSync(tempDbPath, dbSnap1.content);
+      if (walSnap1.exists && walSnap1.content.length > 0) {
+        writeFileSync(`${tempDbPath}-wal`, walSnap1.content);
+        db = new DatabaseSync(tempDbPath, { readOnly: true });
       } else {
-        // Non-empty -wal: read a double-fenced snapshot of .db and -wal into memory,
-        // verify neither changed across the pair of reads, then replay in a temp dir.
-        const dbSnap1 = readFileSnapshot(dbPath);
-        if (onAfterDbSnapshot) {
-          onAfterDbSnapshot(attempt);
-        }
-        const walSnap1 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
-        const dbSnap2 = readFileSnapshot(dbPath);
-        const walSnap2 = readFileSnapshot(`${dbPath}-wal`, { optional: true });
-        if (!snapshotsMatch(dbSnap1, dbSnap2) || !snapshotsMatch(walSnap1, walSnap2)) {
-          continue;
-        }
-
-        tempWalDir = mkdtempSync(join(tmpdir(), 'ag-mon-wal-'));
-        const tempDbPath = join(tempWalDir, basename(dbPath));
-        writeFileSync(tempDbPath, dbSnap1.content);
-        if (walSnap1.exists && walSnap1.content.length > 0) {
-          writeFileSync(`${tempDbPath}-wal`, walSnap1.content);
-          db = new DatabaseSync(tempDbPath, { readOnly: true });
-        } else {
-          db = new DatabaseSync(toImmutableSqliteUri(tempDbPath), { readOnly: true });
-        }
+        db = new DatabaseSync(toImmutableSqliteUri(tempDbPath), { readOnly: true });
       }
       try {
         db.exec('PRAGMA busy_timeout = 1000;');

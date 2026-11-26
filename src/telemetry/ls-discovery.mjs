@@ -259,21 +259,24 @@ async function execLsDiscoveryCmd(file, args, timeoutMs = 5000) {
   });
 }
 
-function readLinuxProcCandidates() {
-  if (!existsSync('/proc')) return [];
+function readLinuxProcCandidates(procFs = null) {
+  const exists = procFs?.existsSync || existsSync;
+  const readdir = procFs?.readdirSync || readdirSync;
+  const readFile = procFs?.readFileSync || readFileSync;
+  if (!exists('/proc')) return [];
   const results = [];
   try {
-    for (const entry of readdirSync('/proc')) {
+    for (const entry of readdir('/proc')) {
       if (!/^\d+$/.test(entry)) continue;
       const pid = Number(entry);
       try {
-        const rawCmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        const rawCmd = readFile(`/proc/${pid}/cmdline`, 'utf8');
         if (!rawCmd) continue;
         const commandLine = rawCmd.replace(/\0+/g, ' ').trim();
         if (!/agy|antigravity-cli|language_server/i.test(commandLine)) continue;
         let ppid = 0;
         try {
-          const statRaw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+          const statRaw = readFile(`/proc/${pid}/stat`, 'utf8');
           const afterComm = statRaw.slice(statRaw.lastIndexOf(')') + 1).trim();
           const parts = afterComm.split(/\s+/);
           ppid = Number(parts[1]) || 0;
@@ -291,7 +294,7 @@ function readLinuxProcCandidates() {
   return results;
 }
 
-async function listCandidateOsProcesses(platform, execCmdFn) {
+async function listCandidateOsProcesses(platform, execCmdFn, procFs = null) {
   if (platform === 'win32') {
     const psScript =
       "Get-CimInstance Win32_Process -Filter \"Name LIKE 'agy%' OR Name LIKE 'antigravity-cli%' OR Name LIKE 'language_server%'\" | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
@@ -315,7 +318,7 @@ async function listCandidateOsProcesses(platform, execCmdFn) {
   }
 
   if (platform === 'linux') {
-    const procList = readLinuxProcCandidates();
+    const procList = readLinuxProcCandidates(procFs);
     if (procList.length > 0) return procList;
   }
 
@@ -442,6 +445,7 @@ export async function discoverAntigravityLsEndpoint(options = {}) {
     daemonDirs = options.execCmdFn ? [] : DAEMON_DIRS,
     isPidAliveFn = defaultIsLsPidAlive,
     procFs = null,
+    listProcessesFn = null,
     execCmdFn = execLsDiscoveryCmd,
     fetchFn = typeof fetch === 'function' ? fetch : null,
   } = options;
@@ -470,7 +474,10 @@ export async function discoverAntigravityLsEndpoint(options = {}) {
   // 2. 回退枚举操作系统进程并解析监听端口
   let rawProcs = [];
   try {
-    rawProcs = await listCandidateOsProcesses(platform, execCmdFn);
+    rawProcs =
+      typeof listProcessesFn === 'function'
+        ? await listProcessesFn(platform)
+        : await listCandidateOsProcesses(platform, execCmdFn, procFs);
   } catch {
     return null;
   }
