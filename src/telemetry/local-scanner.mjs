@@ -45,7 +45,6 @@ import {
   readLocalSummaryIndex,
   readLocalSummarySnapshot,
 } from './cli-sqlite-reader.mjs';
-import { callLsRpc } from './ls-rpc.mjs';
 import { formatGenericModelSlug, getBaseModelLabel } from './model-pricing.mjs';
 import { PLACEHOLDER_MAP } from './pricing-catalog.mjs';
 import {
@@ -2392,18 +2391,7 @@ export async function enumerateAndSyncConversations({
               }
             }
             if (!trajRes) {
-              const rpcTimeoutMs = isRemote
-                ? Math.min(
-                    REMOTE_TRAJECTORY_RPC_TIMEOUT_MS,
-                    Math.max(REMOTE_MIN_REMAINING_BUDGET_MS, getRemoteRemainingBudgetMs())
-                  )
-                : 5000;
-              trajRes = await callLsRpc(
-                'GetCascadeTrajectory',
-                { cascadeId: conv.cascadeId },
-                rpcTimeoutMs,
-                endpoint
-              );
+              throw new Error('Local SQLite trajectory unavailable');
             }
             if (isRemote) {
               remoteConsecutiveTimeouts = 0;
@@ -2768,7 +2756,7 @@ export async function enumerateAndSyncConversations({
               !offlineRecovered &&
               !(
                 (!conv.inSummaries || summariesFromLocalDb || conv.appSource === 'cli') &&
-                /(?:\(404\)|\bnot_found\b|Language Server address unavailable)/i.test(
+                /(?:\(404\)|\bnot_found\b|Language Server address unavailable|Local SQLite trajectory unavailable)/i.test(
                   String(err?.message || '')
                 )
               )

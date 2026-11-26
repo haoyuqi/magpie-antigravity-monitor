@@ -352,6 +352,12 @@ function tslSerializeEntryHeader(entry) {
   return meta;
 }
 
+function isSqliteCantOpenError(err) {
+  if (Number(err?.errcode) === 14) return true;
+  const msg = String(err?.message || err?.errstr || err?.code || '');
+  return /SQLITE_CANTOPEN|unable to open database file/i.test(msg);
+}
+
 function tslWithSqliteConnection(dbPath, { readOnly = false }, fn) {
   const DatabaseSync = getNodeSqliteDatabaseSync();
   if (!DatabaseSync) {
@@ -360,19 +366,34 @@ function tslWithSqliteConnection(dbPath, { readOnly = false }, fn) {
   if (!readOnly) {
     mkdirSync(dirname(dbPath), { recursive: true });
   }
+  let useQueryOnlyFallback = false;
   for (let attempt = 0; attempt < TSL_MAX_BUSY_ATTEMPTS; attempt += 1) {
     let db = null;
     try {
-      db = readOnly ? new DatabaseSync(dbPath, { readOnly: true }) : new DatabaseSync(dbPath);
-      if (readOnly) {
+      if (readOnly && !useQueryOnlyFallback) {
+        db = new DatabaseSync(dbPath, { readOnly: true });
         db.exec(`PRAGMA busy_timeout = ${TSL_BUSY_TIMEOUT_READ_MS};`);
+      } else if (readOnly && useQueryOnlyFallback) {
+        db = new DatabaseSync(dbPath);
+        db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${TSL_BUSY_TIMEOUT_READ_MS};`);
       } else {
+        db = new DatabaseSync(dbPath);
         db.exec(
           `PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = ${TSL_BUSY_TIMEOUT_WRITE_MS};`
         );
       }
       return fn(db);
     } catch (err) {
+      if (
+        readOnly &&
+        !useQueryOnlyFallback &&
+        existsSync(dbPath) &&
+        isSqliteCantOpenError(err)
+      ) {
+        useQueryOnlyFallback = true;
+        attempt -= 1;
+        continue;
+      }
       if (attempt + 1 < TSL_MAX_BUSY_ATTEMPTS && isSqliteBusyError(err)) {
         continue;
       }

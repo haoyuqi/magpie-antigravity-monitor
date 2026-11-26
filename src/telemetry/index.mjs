@@ -33,8 +33,6 @@ export {
   isAllowedApiRoute,
   sanitizeSettingsPatch,
 } from './allowlist.mjs';
-export { ensureLsEndpointDiscovered } from './ls-discovery.mjs';
-export { getQuotaReservationLogSnapshot } from './quota-reservation.mjs';
 export {
   createDefaultSettingsObject,
   normalizeFullSettings,
@@ -42,4 +40,5 @@ export {
 export {
   buildTelemetryPayload,
   clearTelemetryBuilderMemo,
+  setBeforeTelemetryReadHookForTest,
 } from './telemetry-builder.mjs';

@@ -7,7 +7,8 @@ import { join } from 'node:path';
 const tempRoot = mkdtempSync(join(tmpdir(), 'ag-mon-lifecycle-'));
 process.env.USAGE_MONITOR_DATA_DIR = join(tempRoot, 'data');
 process.env.ANTIGRAVITY_GEMINI_DIR = join(tempRoot, 'gemini');
-process.env.ANTIGRAVITY_LS_ADDRESS = 'test.invalid';
+delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+delete process.env.USAGE_MONITOR_APP_DATA_DIR;
 
 const { after, describe, it } = await import('node:test');
 const { startMonitorHttpServer } = await import('../src/server/http-server.mjs');

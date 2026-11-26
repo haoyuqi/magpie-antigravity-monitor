@@ -21,13 +21,13 @@ A **strictly read-only** Google Antigravity (Desktop / IDE / `agy` CLI) token us
 
 This plugin is a **read-only Antigravity (`agy`) monitoring dashboard**:
 
-- **In Scope (Read-Only)**:
-  - Local discovery of Antigravity Language Server / Hub (`hub_*.json` or process ports) for live quota pools (5-hour / weekly limits, reset timers, lease reservations) and active session metrics.
+- **In Scope (Strictly Local-Disk Read-Only)**:
+  - Offline, zero-network read-only scanning of `~/.gemini/antigravity{,-cli,-ide,-idea}/` (`conversations/*.db`, `annotations/*.pbtxt`, `transcript.jsonl`, `.deep_stats_cache.json`).
   - Real-time output speed (TPS), time-to-first-token (TTFT), cache hit rate, and estimated step/session cost.
   - 10-channel context breakdown (with main agent / subagent switching).
   - Main agent, subagent, and Native Swarm step details, historical trends, heatmaps, and model/project/session rankings.
-  - Offline read-only scanning of `~/.gemini/antigravity{,-cli,-ide,-idea}/` (`conversations/*.db`, `annotations/*.pbtxt`, `transcript.jsonl`, `.deep_stats_cache.json`).
 - **Non-Goals**:
+  - Never calls Antigravity Language Server RPC, scans host processes/ports/`hub_*.json`, polls official quota APIs, or accesses OAuth/keyring credentials.
   - Never modifies Antigravity configs, desktop shortcuts, `argv.json`, or CLI `statusLine`.
   - Never injects CDP overlays/capsules, host i18n patches, or account-switching process restarts into Antigravity.
   - Never hijacks CloudCode proxy or overrides per-model context window limits.

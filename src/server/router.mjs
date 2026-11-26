@@ -123,10 +123,5 @@ export async function handleApiRoute({
     return { status: 200, body: { ok: true, cloudStatus } };
   }
 
-  if (normMethod === 'GET' && normPath === '/api/quota-reservation/log') {
-    const snapshot = deps.getQuotaReservationLogSnapshot();
-    return { status: 200, body: snapshot };
-  }
-
   return { status: 404, body: { error: 'Not found' } };
 }

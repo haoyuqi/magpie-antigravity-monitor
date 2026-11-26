@@ -7,7 +7,8 @@ import { join } from 'node:path';
 const tempRoot = mkdtempSync(join(tmpdir(), 'ag-mon-http-'));
 process.env.USAGE_MONITOR_DATA_DIR = join(tempRoot, 'data');
 process.env.ANTIGRAVITY_GEMINI_DIR = join(tempRoot, 'gemini');
-process.env.ANTIGRAVITY_LS_ADDRESS = 'test.invalid';
+delete process.env.ANTIGRAVITY_APP_DATA_DIR;
+delete process.env.USAGE_MONITOR_APP_DATA_DIR;
 
 const { after, before, describe, it } = await import('node:test');
 const { installBunSqliteShim } = await import('../src/telemetry/index.mjs');
@@ -113,7 +114,7 @@ describe('monitor HTTP server & security', () => {
     assert.equal(badOrigin.status, 403);
 
     const nullOrigin = await rawHttpRequest(srv.port, {
-      path: '/api/quota-reservation/log',
+      path: '/api/telemetry?range=all',
       headers: {
         Origin: 'null',
         [TOKEN_HEADER]: srv.token,
@@ -123,7 +124,7 @@ describe('monitor HTTP server & security', () => {
     assert.equal(nullOrigin.headers['access-control-allow-origin'], 'null');
 
     const sameOrigin = await rawHttpRequest(srv.port, {
-      path: '/api/quota-reservation/log',
+      path: '/api/telemetry?range=all',
       headers: {
         Origin: `http://localhost:${srv.port}`,
         [TOKEN_HEADER]: srv.token,
@@ -131,6 +132,14 @@ describe('monitor HTTP server & security', () => {
     });
     assert.equal(sameOrigin.status, 200);
     assert.equal(sameOrigin.headers['access-control-allow-origin'], `http://localhost:${srv.port}`);
+
+    const blockedQuotaLog = await rawHttpRequest(srv.port, {
+      path: '/api/quota-reservation/log',
+      headers: {
+        [TOKEN_HEADER]: srv.token,
+      },
+    });
+    assert.equal(blockedQuotaLog.status, 403);
   });
 
   it('requires valid X-Usage-Monitor-Token on /api/* and serves read-only telemetry', async () => {

@@ -20,6 +20,7 @@ import {
   isSqliteDbReadyForRead,
   withReadOnlySqliteDb,
 } from '../src/telemetry/sqlite-client.mjs';
+import { createTrajectorySqliteLedger } from '../src/telemetry/trajectory-sqlite-ledger.mjs';
 
 const tempDirs = [];
 
@@ -459,6 +460,73 @@ describe('bun-sqlite-shim', () => {
     } finally {
       if (!writerClosed) {
         writer.close();
+      }
+    }
+  });
+
+  it('trajectory SQLite ledger falls back to query_only when readOnly hits SQLITE_CANTOPEN on closed WAL', async () => {
+    await installBunSqliteShim();
+    const dir = makeTempDir();
+    const sqliteFilePath = join(dir, 'trajectory_store.sqlite');
+
+    const seedLedger = createTrajectorySqliteLedger({ sqliteFilePath });
+    seedLedger.openAndHydrateInitial();
+    seedLedger.flushDeltaBatch({
+      upserts: [
+        {
+          cascadeId: 'conv-1',
+          entry: {
+            title: 'Test',
+            steps: [{ stepIndex: 1, inputTokens: 10, outputTokens: 5 }],
+          },
+        },
+      ],
+    });
+
+    const prevGlobalDbSync = globalThis.DatabaseSync;
+    const RealDbSync = getNodeSqliteDatabaseSync();
+    let readOnlyCantOpenCount = 0;
+    let sawQueryOnlyPragma = false;
+
+    globalThis.DatabaseSync = class WrappedDbSync extends RealDbSync {
+      constructor(dbPath, opts) {
+        if (opts !== undefined) {
+          super(dbPath, opts);
+        } else {
+          super(dbPath);
+        }
+        if (opts?.readOnly) {
+          this.prepare = () => {
+            readOnlyCantOpenCount += 1;
+            throw Object.assign(new Error('unable to open database file'), {
+              errcode: 14,
+              code: 'ERR_SQLITE_ERROR',
+            });
+          };
+        } else {
+          const origExec = this.exec.bind(this);
+          this.exec = (sql) => {
+            if (/PRAGMA\s+query_only\s*=\s*ON/i.test(String(sql || ''))) {
+              sawQueryOnlyPragma = true;
+            }
+            return origExec(sql);
+          };
+        }
+      }
+    };
+
+    try {
+      const readLedger = createTrajectorySqliteLedger({ sqliteFilePath });
+      const hydrated = readLedger.openAndHydrateInitial();
+      assert.ok(readOnlyCantOpenCount >= 1);
+      assert.equal(sawQueryOnlyPragma, true);
+      assert.equal(hydrated.cacheObj['conv-1']?.title, 'Test');
+      assert.equal(hydrated.cacheObj['conv-1']?.steps?.length, 1);
+    } finally {
+      if (prevGlobalDbSync === undefined) {
+        delete globalThis.DatabaseSync;
+      } else {
+        globalThis.DatabaseSync = prevGlobalDbSync;
       }
     }
   });
